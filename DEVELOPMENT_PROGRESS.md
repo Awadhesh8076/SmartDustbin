@@ -123,3 +123,16 @@ cd C:\Users\Awadhesh\Desktop\SmartDustbin
 cd C:\Users\Awadhesh\Desktop\SmartDustbin\frontend
 npm run dev
 ```
+
+---
+
+## 6. GITHUB PUBLISHING & DEPLOYMENT STATUS (COMPLETED)
+
+- **GitHub Profile**: `https://github.com/Awadhesh8076`
+- **Repository URL**: `https://github.com/Awadhesh8076/SmartDustbin`
+- **Visibility**: Public
+- **Default Branch**: `main`
+- **Latest Commit**: `3b073db1ee90785f2ba364522b397958b83d2d74`
+- **Total Tracked Source Files**: 102
+- **Status**: Synchronized with origin/main (0 uncommitted changes, 0 secrets, 0 database files, 0 virtualenvs).
+
