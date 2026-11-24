@@ -150,3 +150,66 @@ def test_real_hardware_sorting_states_and_rewards():
                 assert latest_cmd.status == "UNKNOWN"
             finally:
                 db.close()
+
+def test_device_test_endpoints_and_no_silent_fallback():
+    with TestClient(app) as client:
+        # 1. Test Camera Test Capture Endpoint
+        from PIL import ImageDraw
+        img = Image.new("RGB", (320, 240), color=(100, 150, 200))
+        draw = ImageDraw.Draw(img)
+        draw.line([(0, 0), (320, 240)], fill=(255, 255, 255))
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=90)
+        valid_jpeg = buf.getvalue()
+
+        mock_cam_resp = MagicMock()
+        mock_cam_resp.status_code = 200
+        mock_cam_resp.content = valid_jpeg
+
+        with patch("httpx.AsyncClient.get", return_value=mock_cam_resp):
+            res_cam = client.post("/api/devices/cam/test-capture", params={"ip": "192.168.4.10"})
+            assert res_cam.status_code == 200
+            data_cam = res_cam.json()
+            assert data_cam["status"] == "SUCCESS"
+            assert data_cam["bytes_received"] == len(valid_jpeg)
+            assert data_cam["image_preview_url"].startswith("data:image/jpeg;base64,")
+
+        # 2. Test DevKit Test Sort Actuation Endpoint
+        mock_sort_resp = MagicMock()
+        mock_sort_resp.status_code = 200
+        mock_sort_resp.json.return_value = {
+            "status": "SUCCESS",
+            "waste": "PLASTIC",
+            "message": "Physical sorting completed successfully."
+        }
+
+        with patch("httpx.AsyncClient.get", return_value=mock_sort_resp):
+            res_sort = client.post(
+                "/api/devices/devkit/test-sort",
+                json={"category": "PLASTIC", "ip": "192.168.4.20"}
+            )
+            assert res_sort.status_code == 200
+            data_sort = res_sort.json()
+            assert data_sort["status"] == "SUCCESS"
+            assert data_sort["category"] == "PLASTIC"
+
+        # 3. Test Invalid Category on DevKit Test Sort Endpoint
+        res_invalid = client.post(
+            "/api/devices/devkit/test-sort",
+            json={"category": "UNKNOWN", "ip": "192.168.4.20"}
+        )
+        assert res_invalid.status_code == 400
+
+        # 4. Test Zero Silent Fallback in REAL_HARDWARE mode
+        # Switch mode to REAL_HARDWARE
+        client.post("/api/devices/mode", json={"mode": "REAL_HARDWARE"})
+
+        import httpx
+        with patch("httpx.AsyncClient.get", side_effect=httpx.ConnectError("Connection refused")):
+            res_fail = client.post("/api/devices/camera/capture")
+            # Must raise 502 and NOT silently return a simulated detection
+            assert res_fail.status_code == 502
+            assert "Cannot connect to ESP32-CAM" in res_fail.json()["detail"]
+
+        # Reset mode to SIMULATION
+        client.post("/api/devices/mode", json={"mode": "SIMULATION"})

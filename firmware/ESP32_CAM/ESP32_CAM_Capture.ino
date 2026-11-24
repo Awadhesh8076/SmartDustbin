@@ -1,9 +1,9 @@
 /*
  * =========================================================================
- * Smart Dustbin - ESP32-CAM Capture Server
- * Board: AI Thinker ESP32-CAM
- * Description: Hosts a lightweight HTTP server serving real-time JPEG captures 
- *              to the Unity Mobile application.
+ * Smart Dustbin - ESP32-CAM Capture Server (Wi-Fi Station Mode)
+ * Board: AI-Thinker ESP32-CAM (OV2640)
+ * Description: Connects to local Wi-Fi via DHCP, prints assigned IP to Serial
+ *              Monitor, and provides HTTP GET /capture and /status for FastAPI.
  * =========================================================================
  */
 
@@ -12,16 +12,11 @@
 #include <WebServer.h>
 
 // ==========================================
-// 1. WiFi Configuration
-// Replace with your local WiFi credentials
+// 1. WiFi Configuration (Station Mode / DHCP)
+// Replace with your local Wi-Fi credentials
 // ==========================================
 const char* ssid = "YOUR_WIFI_SSID";
 const char* password = "YOUR_WIFI_PASSWORD";
-
-// Optional: Configure Static IP (Recommended for predictable Unity connection)
-IPAddress local_IP(192, 168, 4, 10);
-IPAddress gateway(192, 168, 4, 1);
-IPAddress subnet(255, 255, 255, 0);
 
 WebServer server(80);
 
@@ -49,25 +44,57 @@ WebServer server(80);
 #define FLASH_LED_PIN      4
 
 // ==========================================
-// 3. HTTP /capture Handler
+// 3. HTTP Request Handlers
 // ==========================================
 void handleCapture() {
+  // Capture frame from OV2640 sensor
   camera_fb_t * fb = esp_camera_fb_get();
   if (!fb) {
-    Serial.println("[ERROR] Camera capture failed");
-    server.send(500, "text/plain", "Camera Capture Failed");
+    Serial.println("[ERROR] Camera capture failed: frame buffer is null");
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+    server.send(500, "application/json", "{\"status\":\"ERROR\",\"message\":\"Camera capture failed: frame buffer null\"}");
     return;
   }
 
-  // Allow cross-origin requests from any client
+  // Set permissive CORS headers for local LAN access
   server.sendHeader("Access-Control-Allow-Origin", "*");
+  server.sendHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  server.sendHeader("Access-Control-Allow-Headers", "*");
+  server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+  server.sendHeader("Pragma", "no-cache");
+  server.sendHeader("Expires", "0");
+
   server.send_P(200, "image/jpeg", (const char *)fb->buf, fb->len);
   
   esp_camera_fb_return(fb);
 }
 
+void handleStatus() {
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  String json = "{\"device\":\"ESP32_CAM\",\"status\":\"ONLINE\",\"ip\":\"" + WiFi.localIP().toString() + "\",\"psram\":" + String(psramFound() ? "true" : "false") + "}";
+  server.send(200, "application/json", json);
+}
+
 void handleRoot() {
-  server.send(200, "text/html", "<h2>Smart Dustbin ESP32-CAM is Online</h2><p><a href='/capture'>Click to test /capture</a></p>");
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  String html = "<!DOCTYPE html><html><head><title>SmartDustbin ESP32-CAM</title>"
+                "<style>body{font-family:sans-serif;padding:20px;background:#0f172a;color:#f8fafc;}"
+                "a{color:#38bdf8;text-decoration:none;}a:hover{text-decoration:underline;}"
+                ".card{background:#1e293b;border-radius:12px;padding:20px;max-width:500px;border:1px solid #334155;}"
+                ".badge{background:#059669;color:#fff;padding:4px 10px;border-radius:999px;font-size:12px;}"
+                "</style></head><body>"
+                "<div class='card'>"
+                "<h2>SmartDustbin ESP32-CAM <span class='badge'>ONLINE</span></h2>"
+                "<p><strong>IP Address:</strong> " + WiFi.localIP().toString() + "</p>"
+                "<p><strong>PSRAM Found:</strong> " + String(psramFound() ? "Yes" : "No") + "</p>"
+                "<hr style='border-color:#334155;margin:15px 0;'>"
+                "<h3>Endpoints</h3>"
+                "<ul>"
+                "<li><a href='/status'>/status</a> — Device health JSON</li>"
+                "<li><a href='/capture'>/capture</a> — Live JPEG snapshot</li>"
+                "</ul>"
+                "</div></body></html>";
+  server.send(200, "text/html", html);
 }
 
 // ==========================================
@@ -75,7 +102,10 @@ void handleRoot() {
 // ==========================================
 void setup() {
   Serial.begin(115200);
-  Serial.println("\n[INIT] Starting Smart Dustbin ESP32-CAM...");
+  delay(1000);
+  Serial.println("\n==================================================");
+  Serial.println("  Smart Dustbin - ESP32-CAM (Station / DHCP Mode) ");
+  Serial.println("==================================================");
 
   pinMode(FLASH_LED_PIN, OUTPUT);
   digitalWrite(FLASH_LED_PIN, LOW); // Flash LED off by default
@@ -104,9 +134,9 @@ void setup() {
   config.pixel_format = PIXFORMAT_JPEG;
 
   // Frame size & quality configuration
-  if(psramFound()){
+  if (psramFound()) {
     config.frame_size = FRAMESIZE_VGA; // 640x480
-    config.jpeg_quality = 10;          // 0-63 (lower is higher quality)
+    config.jpeg_quality = 10;          // High quality (0-63 scale)
     config.fb_count = 2;
   } else {
     config.frame_size = FRAMESIZE_QVGA; // 320x240
@@ -117,36 +147,48 @@ void setup() {
   // Camera Init
   esp_err_t err = esp_camera_init(&config);
   if (err != ESP_OK) {
-    Serial.printf("[ERROR] Camera init failed with error 0x%x\n", err);
+    Serial.printf("[ERROR] Camera initialization failed with error code: 0x%x\n", err);
     return;
   }
 
-  // Adjust camera sensor orientation if needed
   sensor_t * s = esp_camera_sensor_get();
-  s->set_vflip(s, 0); // 1 to flip vertically
-  s->set_hmirror(s, 0); // 1 to mirror horizontally
+  s->set_vflip(s, 0);   // Set to 1 if image is inverted
+  s->set_hmirror(s, 0); // Set to 1 if image is mirrored
 
-  // Connect to WiFi
-  // WiFi.config(local_IP, gateway, subnet); // Uncomment to enforce static IP
+  // Connect to Wi-Fi in Station Mode using DHCP
+  WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
-  Serial.print("[WIFI] Connecting to ");
-  Serial.print(ssid);
+  Serial.print("[WIFI] Connecting to Wi-Fi SSID: ");
+  Serial.println(ssid);
 
-  while (WiFi.status() != WL_CONNECTED) {
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED && attempts < 40) {
     delay(500);
     Serial.print(".");
+    attempts++;
   }
 
-  Serial.println("\n[WIFI] Connected!");
-  Serial.print("[WIFI] Camera Stream IP: http://");
-  Serial.print(WiFi.localIP());
-  Serial.println("/capture");
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\n[WIFI] Connected successfully via DHCP!");
+    Serial.printf("[WIFI] Assigned IP Address: %s\n", WiFi.localIP().toString().c_str());
+    Serial.printf("[WIFI] Subnet Mask: %s\n", WiFi.subnetMask().toString().c_str());
+    Serial.printf("[WIFI] Gateway IP: %s\n", WiFi.gatewayIP().toString().c_str());
+    Serial.printf("[WIFI] RSSI Signal: %d dBm\n", WiFi.RSSI());
+    Serial.println("--------------------------------------------------");
+    Serial.printf("[INFO] Web UI root URL:    http://%s/\n", WiFi.localIP().toString().c_str());
+    Serial.printf("[INFO] Snapshot capture:   http://%s/capture\n", WiFi.localIP().toString().c_str());
+    Serial.printf("[INFO] Health status JSON: http://%s/status\n", WiFi.localIP().toString().c_str());
+    Serial.println("--------------------------------------------------");
+  } else {
+    Serial.println("\n[ERROR] Wi-Fi connection timed out. Please check SSID/Password and router availability.");
+  }
 
-  // Route Handlers
+  // Register HTTP Route Handlers
   server.on("/", handleRoot);
+  server.on("/status", handleStatus);
   server.on("/capture", handleCapture);
   server.begin();
-  Serial.println("[SERVER] HTTP Server started");
+  Serial.println("[SERVER] ESP32-CAM HTTP Server active on port 80.");
 }
 
 void loop() {

@@ -1,10 +1,17 @@
 /*
  * =========================================================================
- * Smart Dustbin - ESP32 DevKit Sorting Mechanism Controller
+ * Smart Dustbin - ESP32 DevKit Dual-Servo Sorter (Wi-Fi Station Mode)
  * Board: ESP32 DevKit V1 (30 or 36 pins)
- * Description: Listens for HTTP sort commands from Unity Mobile, drives dual 
- *              servo motors for direction selection and waste release, then
- *              returns a verified JSON SUCCESS response for coin rewards.
+ * Servos:
+ *   1. Continuous-Rotation 360-Degree Servo (Chute / Turntable, GPIO 18)
+ *      - Calibrated speed pulses & stop pulses for timed indexing.
+ *   2. Positional 180-Degree Servo (Trapdoor / Flap Release, GPIO 19)
+ *      - Calibrated 0° (closed) and 90° (open) positions.
+ * Features:
+ *   - Wi-Fi Station Mode via DHCP (prints IP to Serial Monitor).
+ *   - Strict category validation (rejects UNKNOWN / invalid categories).
+ *   - Request deduplication (protects against duplicate actuation).
+ *   - Busy guard (HTTP 429) & timeout resilience.
  * Library Required: ESP32Servo (Install via Arduino Library Manager)
  * =========================================================================
  */
@@ -14,83 +21,112 @@
 #include <ESP32Servo.h>
 
 // ==========================================
-// 1. WiFi Configuration
+// 1. WiFi Configuration (Station Mode / DHCP)
+// Replace with your local Wi-Fi credentials
 // ==========================================
 const char* ssid = "YOUR_WIFI_SSID";
 const char* password = "YOUR_WIFI_PASSWORD";
 
-// Optional: Static IP configuration
-IPAddress local_IP(192, 168, 4, 20);
-IPAddress gateway(192, 168, 4, 1);
-IPAddress subnet(255, 255, 255, 0);
-
 WebServer server(80);
 
 // ==========================================
-// 2. Servo Pin & Angle Definitions
+// 2. Servo Pin & Pulse Configurations
 // ==========================================
-#define SERVO1_PIN 18  // Direction / Chute Selector Servo
-#define SERVO2_PIN 19  // Trapdoor / Waste Release Flap Servo
+#define SERVO_360_PIN 18  // Continuous-Rotation 360° Servo (Chute selector)
+#define SERVO_180_PIN 19  // Positional 180° Servo (Trapdoor flap release)
 
-Servo servoDirection;
-Servo servoTrapdoor;
+Servo servo360Chute;
+Servo servo180Trapdoor;
 
-// Angle Configurations
-const int DIR_HOME = 0;
-const int DIR_PLASTIC = 45;
-const int DIR_METAL = 90;
-const int DIR_WET = 135;
-const int DIR_DRY = 180;
+// Continuous-Rotation 360° Servo Calibration:
+// Angle mapping for 360 continuous servos:
+//   90° = Neutral / Full Stop (Pulse ~1500us)
+//  <90° = Clockwise rotation (e.g. 70° for calibrated forward speed)
+//  >90° = Counter-clockwise rotation (e.g. 110° for calibrated reverse speed)
+const int SERVO_360_STOP = 90;
+const int SERVO_360_CW_SPEED = 70;    // Forward rotation speed
+const int SERVO_360_CCW_SPEED = 110;  // Return rotation speed
 
-const int TRAP_CLOSED = 0;
-const int TRAP_OPEN = 90;
+// Calibrated rotation durations (in milliseconds) from Home (0) to each bin
+const int DURATION_PLASTIC_MS = 400;  // Compartment 1
+const int DURATION_METAL_MS   = 800;  // Compartment 2
+const int DURATION_WET_MS     = 1200; // Compartment 3
+const int DURATION_DRY_MS     = 1600; // Compartment 4
 
-// Status tracking
+// Positional 180° Flap Servo Angles:
+const int TRAP_CLOSED = 0;   // Flap closed (holds waste during camera scan)
+const int TRAP_OPEN   = 90;  // Flap opened (releases waste into selected chute)
+const int FLAP_HOLD_OPEN_MS = 1200; // Time held open for item to drop
+
+// System State
 bool isBusy = false;
+String lastExecutedCommandId = "";
+unsigned long lastExecutionTimestamp = 0;
 
 // ==========================================
-// 3. Sorting Routine
+// 3. Physical Sorting Routine
 // ==========================================
-void executeSorting(String wasteType) {
+bool executeSortingCycle(String category, String commandId) {
   isBusy = true;
-  wasteType.toUpperCase();
-  Serial.println("\n[SORTING] Initiating mechanism for: " + wasteType);
-
-  int targetAngle = DIR_HOME;
-  if (wasteType == "PLASTIC") {
-    targetAngle = DIR_PLASTIC;
-  } else if (wasteType == "METAL") {
-    targetAngle = DIR_METAL;
-  } else if (wasteType == "WET") {
-    targetAngle = DIR_WET;
-  } else if (wasteType == "DRY") {
-    targetAngle = DIR_DRY;
-  } else {
-    targetAngle = DIR_PLASTIC; // Fallback default
+  category.toUpperCase();
+  Serial.printf("\n[SORTING] === Starting Sorting Routine for: %s ===\n", category.c_str());
+  if (commandId.length() > 0) {
+    Serial.printf("[SORTING] Command UUID: %s\n", commandId.c_str());
   }
 
-  // Step 1: Rotate selector chute to appropriate bin compartment
-  Serial.printf("[SERVO 1] Rotating selector to %d deg\n", targetAngle);
-  servoDirection.write(targetAngle);
-  delay(600); // Allow servo to reach target
+  // 1. Determine calibrated rotation duration for the continuous 360° servo
+  int runDuration = 0;
+  if (category == "PLASTIC") {
+    runDuration = DURATION_PLASTIC_MS;
+  } else if (category == "METAL") {
+    runDuration = DURATION_METAL_MS;
+  } else if (category == "WET") {
+    runDuration = DURATION_WET_MS;
+  } else if (category == "DRY") {
+    runDuration = DURATION_DRY_MS;
+  } else {
+    Serial.println("[ERROR] Unknown category passed to executeSortingCycle! Aborting.");
+    isBusy = false;
+    return false;
+  }
 
-  // Step 2: Open trapdoor / drop flap
-  Serial.printf("[SERVO 2] Opening release flap to %d deg\n", TRAP_OPEN);
-  servoTrapdoor.write(TRAP_OPEN);
-  delay(1200); // Allow waste item to fall into compartment
+  // Step A: Rotate 360° continuous servo clockwise to index position
+  Serial.printf("[SERVO 360] Indexing chute to %s compartment (Rotating CW for %d ms)\n", category.c_str(), runDuration);
+  servo360Chute.write(SERVO_360_CW_SPEED);
+  delay(runDuration);
 
-  // Step 3: Close trapdoor flap
-  Serial.printf("[SERVO 2] Closing flap to %d deg\n", TRAP_CLOSED);
-  servoTrapdoor.write(TRAP_CLOSED);
-  delay(500);
+  // Step B: Send calibrated stop pulse to hold position
+  servo360Chute.write(SERVO_360_STOP);
+  delay(250); // Stabilization settle
 
-  // Step 4: Return chute to neutral home position
-  Serial.printf("[SERVO 1] Returning selector to home (%d deg)\n", DIR_HOME);
-  servoDirection.write(DIR_HOME);
-  delay(400);
+  // Step C: Open 180° trapdoor flap to drop waste
+  Serial.printf("[SERVO 180] Opening release flap to %d deg for %d ms\n", TRAP_OPEN, FLAP_HOLD_OPEN_MS);
+  servo180Trapdoor.write(TRAP_OPEN);
+  delay(FLAP_HOLD_OPEN_MS);
 
-  Serial.println("[SORTING] Mechanism cycle completed successfully.");
+  // Step D: Close 180° trapdoor flap
+  Serial.printf("[SERVO 180] Closing release flap back to %d deg\n", TRAP_CLOSED);
+  servo180Trapdoor.write(TRAP_CLOSED);
+  delay(500); // Allow flap to seal
+
+  // Step E: Return 360° continuous servo counter-clockwise back to Home index
+  Serial.printf("[SERVO 360] Returning chute to Home (Rotating CCW for %d ms)\n", runDuration);
+  servo360Chute.write(SERVO_360_CCW_SPEED);
+  delay(runDuration);
+
+  // Step F: Complete cycle with stop pulse
+  servo360Chute.write(SERVO_360_STOP);
+  delay(200);
+
+  // Update deduplication cache
+  if (commandId.length() > 0) {
+    lastExecutedCommandId = commandId;
+    lastExecutionTimestamp = millis();
+  }
+
+  Serial.println("[SORTING] Physical cycle completed successfully.\n");
   isBusy = false;
+  return true;
 }
 
 // ==========================================
@@ -98,91 +134,157 @@ void executeSorting(String wasteType) {
 // ==========================================
 void handleSort() {
   server.sendHeader("Access-Control-Allow-Origin", "*");
+  server.sendHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  server.sendHeader("Access-Control-Allow-Headers", "*");
 
+  // Check 1: Sorter busy check (anti-collision)
   if (isBusy) {
-    Serial.println("[ESP32] REJECTED: Sorter mechanism is currently busy!");
-    server.send(429, "application/json", "{\"status\":\"BUSY\",\"message\":\"Sorter is currently executing another cycle.\"}");
+    Serial.println("[REJECTED] Sorter is currently executing another physical cycle.");
+    server.send(429, "application/json", "{\"status\":\"BUSY\",\"message\":\"Sorter mechanism is currently busy.\" }");
     return;
   }
 
+  // Check 2: Missing 'type' parameter
   if (!server.hasArg("type")) {
-    Serial.println("[ESP32] ERROR: Missing 'type' query parameter!");
-    server.send(400, "application/json", "{\"status\":\"ERROR\",\"message\":\"Missing 'type' parameter in query string.\"}");
+    Serial.println("[ERROR] Missing required 'type' query parameter.");
+    server.send(400, "application/json", "{\"status\":\"ERROR\",\"message\":\"Missing 'type' parameter. Allowed: PLASTIC, METAL, WET, DRY.\"}");
     return;
   }
 
   String wasteType = server.arg("type");
-  
-  Serial.println("\n========================================");
-  Serial.println("  >>> COMMAND RECEIVED FROM UNITY APP <<<");
-  Serial.printf("  Waste Category : %s\n", wasteType.c_str());
-  Serial.printf("  Client IP      : %s\n", server.client().remoteIP().toString().c_str());
-  Serial.println("========================================");
+  wasteType.toUpperCase();
 
-  // Execute physical servo movement
-  executeSorting(wasteType);
+  // Check 3: Strict Zero-Guessing Policy — Reject UNKNOWN and invalid categories!
+  if (wasteType == "UNKNOWN" || (wasteType != "PLASTIC" && wasteType != "METAL" && wasteType != "WET" && wasteType != "DRY")) {
+    Serial.printf("[REJECTED] Category '%s' is UNKNOWN or invalid. Zero-guessing policy prohibits actuation.\n", wasteType.c_str());
+    server.send(400, "application/json", "{\"status\":\"REJECTED\",\"waste\":\"" + wasteType + "\",\"message\":\"Actuation rejected: Zero-guessing policy forbids sorting UNKNOWN or unrecognized waste.\"}");
+    return;
+  }
 
-  // Send verified SUCCESS response back to Unity
-  String jsonResponse = "{\"status\":\"SUCCESS\",\"waste\":\"" + wasteType + "\",\"message\":\"Sorted successfully\"}";
-  server.send(200, "application/json", jsonResponse);
-  Serial.println("[ESP32] Sent SUCCESS response to Unity app.\n");
+  // Check 4: Request Deduplication
+  String commandId = server.hasArg("command_id") ? server.arg("command_id") : "";
+  if (commandId.length() > 0 && commandId == lastExecutedCommandId && (millis() - lastExecutionTimestamp < 15000)) {
+    Serial.printf("[DEDUPLICATION] Duplicate command_id '%s' detected within 15s. Returning cached SUCCESS without re-actuation.\n", commandId.c_str());
+    String cachedResponse = "{\"status\":\"SUCCESS\",\"waste\":\"" + wasteType + "\",\"command_id\":\"" + commandId + "\",\"message\":\"Duplicate request acknowledged; previously actuated successfully.\"}";
+    server.send(200, "application/json", cachedResponse);
+    return;
+  }
+
+  Serial.println("==================================================");
+  Serial.printf("  [COMMAND RECEIVED] Category: %s\n", wasteType.c_str());
+  Serial.printf("  Client IP: %s\n", server.client().remoteIP().toString().c_str());
+  if (commandId.length() > 0) {
+    Serial.printf("  Command ID: %s\n", commandId.c_str());
+  }
+  Serial.println("==================================================");
+
+  // Execute physical movement
+  bool success = executeSortingCycle(wasteType, commandId);
+
+  if (success) {
+    String jsonResponse = "{\"status\":\"SUCCESS\",\"waste\":\"" + wasteType + "\",\"command_id\":\"" + commandId + "\",\"message\":\"Physical sorting completed successfully.\"}";
+    server.send(200, "application/json", jsonResponse);
+  } else {
+    server.send(500, "application/json", "{\"status\":\"FAILED\",\"message\":\"Physical sorting cycle failed.\"}");
+  }
 }
 
 void handleStatus() {
   server.sendHeader("Access-Control-Allow-Origin", "*");
-  String json = "{\"device\":\"ESP32_DevKit_Sorter\",\"status\":\"ONLINE\",\"busy\":" + String(isBusy ? "true" : "false") + "}";
+  String json = "{\"device\":\"ESP32_DevKit_Sorter\",\"status\":\"ONLINE\",\"busy\":" + String(isBusy ? "true" : "false") + 
+                ",\"ip\":\"" + WiFi.localIP().toString() + "\",\"uptime_ms\":" + String(millis()) + 
+                ",\"servos\":{\"continuous_chute_gpio\":18,\"positional_flap_gpio\":19}}";
   server.send(200, "application/json", json);
 }
 
 void handleRoot() {
-  server.send(200, "text/html", "<h2>Smart Dustbin Sorter DevKit</h2><p>Send <code>/sort?type=PLASTIC</code> to test sorting.</p>");
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  String html = "<!DOCTYPE html><html><head><title>SmartDustbin DevKit Sorter</title>"
+                "<style>body{font-family:sans-serif;padding:20px;background:#0f172a;color:#f8fafc;}"
+                "a{color:#38bdf8;text-decoration:none;}a:hover{text-decoration:underline;}"
+                ".card{background:#1e293b;border-radius:12px;padding:20px;max-width:550px;border:1px solid #334155;}"
+                ".badge{background:#0284c7;color:#fff;padding:4px 10px;border-radius:999px;font-size:12px;}"
+                "code{background:#0f172a;padding:2px 6px;border-radius:4px;color:#a5f3fc;}"
+                "</style></head><body>"
+                "<div class='card'>"
+                "<h2>SmartDustbin DevKit Sorter <span class='badge'>ONLINE</span></h2>"
+                "<p><strong>IP Address:</strong> " + WiFi.localIP().toString() + "</p>"
+                "<p><strong>Servo 1 (Chute):</strong> Continuous 360° on GPIO 18</p>"
+                "<p><strong>Servo 2 (Flap):</strong> Positional 180° on GPIO 19</p>"
+                "<hr style='border-color:#334155;margin:15px 0;'>"
+                "<h3>Endpoints</h3>"
+                "<ul>"
+                "<li><a href='/status'>/status</a> — Sorter health & busy state JSON</li>"
+                "<li><code>/sort?type=PLASTIC</code> — Actuate plastic compartment</li>"
+                "<li><code>/sort?type=METAL</code> — Actuate metal compartment</li>"
+                "<li><code>/sort?type=WET</code> — Actuate wet compartment</li>"
+                "<li><code>/sort?type=DRY</code> — Actuate dry compartment</li>"
+                "</ul>"
+                "</div></body></html>";
+  server.send(200, "text/html", html);
 }
 
 // ==========================================
-// 5. Setup & Loop
+// 5. Setup & Initialization
 // ==========================================
 void setup() {
   Serial.begin(115200);
-  Serial.println("\n[INIT] Starting Smart Dustbin Sorter DevKit...");
+  delay(1000);
+  Serial.println("\n==================================================");
+  Serial.println(" Smart Dustbin - ESP32 DevKit Dual-Servo Sorter   ");
+  Serial.println("==================================================");
 
-  // Initialize Servos using ESP32 PWM channels
+  // Allocate ESP32 PWM Timers for Servos
   ESP32PWM::allocateTimer(0);
   ESP32PWM::allocateTimer(1);
   ESP32PWM::allocateTimer(2);
   ESP32PWM::allocateTimer(3);
 
-  servoDirection.setPeriodHertz(50); // Standard 50Hz servo
-  servoTrapdoor.setPeriodHertz(50);
+  servo360Chute.setPeriodHertz(50);
+  servo180Trapdoor.setPeriodHertz(50);
 
-  servoDirection.attach(SERVO1_PIN, 500, 2400);
-  servoTrapdoor.attach(SERVO2_PIN, 500, 2400);
+  // Attach servos to respective pins
+  servo360Chute.attach(SERVO_360_PIN, 500, 2400);
+  servo180Trapdoor.attach(SERVO_180_PIN, 500, 2400);
 
-  // Reset to initial positions
-  servoDirection.write(DIR_HOME);
-  servoTrapdoor.write(TRAP_CLOSED);
+  // Calibrated initial positions: Stop pulse for 360°, Closed for 180°
+  servo360Chute.write(SERVO_360_STOP);
+  servo180Trapdoor.write(TRAP_CLOSED);
 
-  // Connect to WiFi
-  // WiFi.config(local_IP, gateway, subnet); // Uncomment to enforce static IP
+  // Connect to Wi-Fi in Station Mode using DHCP
+  WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
-  Serial.print("[WIFI] Connecting to ");
-  Serial.print(ssid);
+  Serial.print("[WIFI] Connecting to Wi-Fi SSID: ");
+  Serial.println(ssid);
 
-  while (WiFi.status() != WL_CONNECTED) {
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED && attempts < 40) {
     delay(500);
     Serial.print(".");
+    attempts++;
   }
 
-  Serial.println("\n[WIFI] Connected!");
-  Serial.print("[WIFI] Sorter Controller IP: http://");
-  Serial.print(WiFi.localIP());
-  Serial.println("/sort?type=PLASTIC");
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\n[WIFI] Connected successfully via DHCP!");
+    Serial.printf("[WIFI] Assigned IP Address: %s\n", WiFi.localIP().toString().c_str());
+    Serial.printf("[WIFI] Subnet Mask: %s\n", WiFi.subnetMask().toString().c_str());
+    Serial.printf("[WIFI] Gateway IP: %s\n", WiFi.gatewayIP().toString().c_str());
+    Serial.printf("[WIFI] RSSI Signal: %d dBm\n", WiFi.RSSI());
+    Serial.println("--------------------------------------------------");
+    Serial.printf("[INFO] Web UI root URL:    http://%s/\n", WiFi.localIP().toString().c_str());
+    Serial.printf("[INFO] Health status JSON: http://%s/status\n", WiFi.localIP().toString().c_str());
+    Serial.printf("[INFO] Test sort URL:      http://%s/sort?type=PLASTIC\n", WiFi.localIP().toString().c_str());
+    Serial.println("--------------------------------------------------");
+  } else {
+    Serial.println("\n[ERROR] Wi-Fi connection timed out. Please check SSID/Password and router availability.");
+  }
 
-  // Route Handlers
+  // Register HTTP Route Handlers
   server.on("/", handleRoot);
   server.on("/status", handleStatus);
   server.on("/sort", handleSort);
   server.begin();
-  Serial.println("[SERVER] Sorter HTTP Server started");
+  Serial.println("[SERVER] ESP32 DevKit Sorter HTTP Server active on port 80.");
 }
 
 void loop() {

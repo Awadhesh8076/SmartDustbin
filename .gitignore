@@ -18,6 +18,9 @@ node_modules/
 frontend/node_modules/
 dist/
 frontend/dist/
+frontend/vite.config.js
+frontend/vite.config.d.ts
+frontend/*.tsbuildinfo
 *.tsbuildinfo
 npm-debug.log*
 yarn-debug.log*

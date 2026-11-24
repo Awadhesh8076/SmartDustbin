@@ -26,6 +26,25 @@ export interface DevicePingResponse {
   ip: string;
   online: boolean;
   status_message: string;
+  latency_ms?: number;
+  details?: Record<string, any>;
+}
+
+export interface CameraTestCaptureResponse {
+  status: string;
+  ip: string;
+  bytes_received: number;
+  format: string;
+  image_preview_url: string;
+  message: string;
+}
+
+export interface DevKitTestSortResponse {
+  status: string;
+  ip: string;
+  category: string;
+  message: string;
+  details?: Record<string, any>;
 }
 
 export interface SettingsResponse {

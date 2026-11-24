@@ -3,6 +3,8 @@ import {
   HealthResponse,
   DeviceStatusResponse,
   DevicePingResponse,
+  CameraTestCaptureResponse,
+  DevKitTestSortResponse,
   SettingsResponse,
   DetectionResult,
   DetectionHistoryResponse,
@@ -46,8 +48,23 @@ export const api = {
     return res.data;
   },
 
-  testDeviceConnection: async (device: 'CAM' | 'DEVKIT', ip?: string): Promise<DevicePingResponse> => {
-    const res = await apiClient.post<DevicePingResponse>('/devices/test-connection', { device, ip });
+  testDeviceConnection: async (device: 'CAM' | 'DEVKIT', ip?: string, forceReal: boolean = true): Promise<DevicePingResponse> => {
+    const res = await apiClient.post<DevicePingResponse>('/devices/test-connection', { device, ip, force_real: forceReal });
+    return res.data;
+  },
+
+  testCameraCapture: async (ip?: string): Promise<CameraTestCaptureResponse> => {
+    const res = await apiClient.post<CameraTestCaptureResponse>('/devices/cam/test-capture', null, {
+      params: ip ? { ip } : undefined,
+    });
+    return res.data;
+  },
+
+  testDevKitSort: async (category: string, ip?: string): Promise<DevKitTestSortResponse> => {
+    const res = await apiClient.post<DevKitTestSortResponse>('/devices/devkit/test-sort', {
+      category,
+      ip,
+    });
     return res.data;
   },
 
