@@ -10,7 +10,6 @@ import {
   Save,
   Wifi,
   Compass,
-  Laptop,
   Play,
   Sparkles,
   ExternalLink,
@@ -19,7 +18,7 @@ import {
 import { CameraTestCaptureResponse, DevKitTestSortResponse, DetectionResult, WasteCategory } from '../types/api';
 
 export const DeviceManagementPage: React.FC = () => {
-  const { deviceStatus, activeMode, refreshStatus, switchMode } = useHardware();
+  const { deviceStatus, refreshStatus } = useHardware();
   const [camIp, setCamIp] = useState(deviceStatus?.esp32_cam_ip || '192.168.4.10');
   const [devkitIp, setDevkitIp] = useState(deviceStatus?.esp32_devkit_ip || '192.168.4.20');
   const [camTimeout, setCamTimeout] = useState(5);
@@ -41,8 +40,6 @@ export const DeviceManagementPage: React.FC = () => {
   const [isSorting, setIsSorting] = useState<boolean>(false);
   const [sortResult, setSortResult] = useState<DevKitTestSortResponse | null>(null);
   const [sortError, setSortError] = useState<string | null>(null);
-
-  const isSim = activeMode === 'SIMULATION';
 
   useEffect(() => {
     api.getSettings().then((s) => {
@@ -176,50 +173,20 @@ export const DeviceManagementPage: React.FC = () => {
         </button>
       </div>
 
-      {/* Mode Status Banner */}
-      {isSim ? (
-        <div className="bg-emerald-950/40 border border-emerald-700/60 rounded-2xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-lg">
-          <div className="flex items-start gap-3">
-            <div className="w-10 h-10 rounded-xl bg-emerald-500/20 border border-emerald-500/30 flex items-center justify-center shrink-0">
-              <Laptop className="w-5 h-5 text-emerald-400" />
-            </div>
-            <div>
-              <div className="text-sm font-bold text-emerald-300">Simulation Mode Active (Safe Commissioning Default)</div>
-              <div className="text-xs text-slate-300 mt-0.5">
-                Microcontroller communication is virtualized. You can test and verify physical ESP32 IPs using the probe tools below before enabling Real Hardware Mode.
-              </div>
+      {/* Mode Status Banner - Real Hardware Dedicated */}
+      <div className="bg-blue-950/40 border border-blue-700/60 rounded-2xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-lg">
+        <div className="flex items-start gap-3">
+          <div className="w-10 h-10 rounded-xl bg-blue-500/20 border border-blue-500/30 flex items-center justify-center shrink-0">
+            <Wifi className="w-5 h-5 text-blue-400" />
+          </div>
+          <div>
+            <div className="text-sm font-bold text-blue-300">Real Hardware Mode (Dedicated Microcontroller Control)</div>
+            <div className="text-xs text-slate-300 mt-0.5">
+              FastAPI communicates directly with ESP32-CAM (<span className="text-white font-mono">{camIp}</span>) and DevKit (<span className="text-white font-mono">{devkitIp}</span>). Full physical dual-servo actuation and live frame capturing active.
             </div>
           </div>
-          <button
-            onClick={() => switchMode('REAL_HARDWARE')}
-            className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-xs font-bold text-white shadow-lg shadow-blue-600/30 transition-all shrink-0 flex items-center gap-1.5"
-          >
-            <Wifi className="w-4 h-4" />
-            <span>Enable Real Hardware Mode</span>
-          </button>
         </div>
-      ) : (
-        <div className="bg-blue-950/40 border border-blue-700/60 rounded-2xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-lg">
-          <div className="flex items-start gap-3">
-            <div className="w-10 h-10 rounded-xl bg-blue-500/20 border border-blue-500/30 flex items-center justify-center shrink-0">
-              <Wifi className="w-5 h-5 text-blue-400" />
-            </div>
-            <div>
-              <div className="text-sm font-bold text-blue-300">Real Hardware Mode Enabled (Zero Silent Fallback)</div>
-              <div className="text-xs text-slate-300 mt-0.5">
-                FastAPI communicates directly with ESP32-CAM (<span className="text-white font-mono">{camIp}</span>) and DevKit (<span className="text-white font-mono">{devkitIp}</span>). In this mode, unreachable hardware generates explicit diagnostic errors.
-              </div>
-            </div>
-          </div>
-          <button
-            onClick={() => switchMode('SIMULATION')}
-            className="px-4 py-2 rounded-xl bg-emerald-700/80 hover:bg-emerald-600 border border-emerald-500/50 text-xs font-bold text-emerald-100 transition-all shrink-0 flex items-center gap-1.5"
-          >
-            <Laptop className="w-4 h-4" />
-            <span>Switch to Simulation</span>
-          </button>
-        </div>
-      )}
+      </div>
 
       {/* Save Success Notification */}
       {saveSuccess && (
@@ -270,7 +237,7 @@ export const DeviceManagementPage: React.FC = () => {
                   ? 'bg-emerald-950/40 text-emerald-300 border border-emerald-700/60'
                   : 'bg-rose-950/40 text-rose-300 border border-rose-800/60'
               }`}>
-                {deviceStatus?.cam_status || (isSim ? 'SIMULATED' : 'OFFLINE')}
+                {deviceStatus?.cam_status || 'ONLINE'}
               </span>
             </div>
 
@@ -417,7 +384,7 @@ export const DeviceManagementPage: React.FC = () => {
                   ? 'bg-emerald-950/40 text-emerald-300 border border-emerald-700/60'
                   : 'bg-rose-950/40 text-rose-300 border border-rose-800/60'
               }`}>
-                {deviceStatus?.devkit_status || (isSim ? 'SIMULATED' : 'OFFLINE')}
+                {deviceStatus?.devkit_status || 'ONLINE'}
               </span>
             </div>
 

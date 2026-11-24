@@ -6,7 +6,6 @@ import {
   Coins,
   Cpu,
   BrainCircuit,
-  Laptop,
   CheckCircle2,
   Sparkles,
   ArrowRight,
@@ -20,9 +19,8 @@ import { api } from '../services/api';
 import { DashboardStatsResponse, RecentActivityItem } from '../types/api';
 
 export const DashboardPage: React.FC = () => {
-  const { activeMode, deviceStatus, health } = useHardware();
+  const { deviceStatus, health } = useHardware();
   const { balance } = useRewards();
-  const isSim = activeMode === 'SIMULATION';
 
   const [stats, setStats] = useState<DashboardStatsResponse | null>(null);
   const [activities, setActivities] = useState<RecentActivityItem[]>([]);
@@ -81,18 +79,14 @@ export const DashboardPage: React.FC = () => {
         <div className="bg-slate-800/60 border border-slate-700/60 rounded-2xl p-5 shadow-sm">
           <div className="flex items-center justify-between mb-3">
             <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Active Mode</span>
-            {isSim ? (
-              <Laptop className="w-5 h-5 text-emerald-400" />
-            ) : (
-              <Cpu className="w-5 h-5 text-blue-400" />
-            )}
+            <Cpu className="w-5 h-5 text-blue-400" />
           </div>
           <div className="text-2xl font-bold text-white mb-1">
-            {isSim ? 'Simulation Mode' : 'Real Hardware'}
+            Real Hardware
           </div>
           <div className="text-xs text-slate-400 flex items-center gap-1.5">
             <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-            <span>{isSim ? 'Virtual Servos Active (Default)' : 'ESP32 Linked'}</span>
+            <span>ESP32 Hardware Linked</span>
           </div>
         </div>
 
@@ -205,7 +199,7 @@ export const DashboardPage: React.FC = () => {
               <div className="text-xs text-slate-400 mb-1">ESP32-CAM (Capture Node)</div>
               <div className="text-sm font-semibold text-white flex items-center gap-2">
                 <span className="w-2 h-2 rounded-full bg-emerald-400" />
-                <span>{deviceStatus?.cam_status || (isSim ? 'SIMULATED' : 'ONLINE')}</span>
+                <span>{deviceStatus?.cam_status || 'ONLINE'}</span>
               </div>
               <div className="text-[11px] text-slate-500 mt-1">IP: {deviceStatus?.esp32_cam_ip || '192.168.4.10'} (Port 80)</div>
             </div>
@@ -214,7 +208,7 @@ export const DashboardPage: React.FC = () => {
               <div className="text-xs text-slate-400 mb-1">ESP32 DevKit (Sorter Node)</div>
               <div className="text-sm font-semibold text-white flex items-center gap-2">
                 <span className="w-2 h-2 rounded-full bg-emerald-400" />
-                <span>{deviceStatus?.devkit_status || (isSim ? 'SIMULATED' : 'ONLINE')}</span>
+                <span>{deviceStatus?.devkit_status || 'ONLINE'}</span>
               </div>
               <div className="text-[11px] text-slate-500 mt-1">
                 IP: {deviceStatus?.esp32_devkit_ip || '192.168.4.20'} • GPIO 18 & 19

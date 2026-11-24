@@ -42,19 +42,8 @@ def get_or_create_device_config(db: Session) -> DeviceConfiguration:
 def get_device_status(db: Session = Depends(get_db)):
     config = get_or_create_device_config(db)
     
-    if config.active_mode == "SIMULATION":
-        return DeviceStatusResponse(
-            active_mode="SIMULATION",
-            esp32_cam_ip=config.esp32_cam_ip,
-            esp32_devkit_ip=config.esp32_devkit_ip,
-            cam_status="SIMULATED",
-            devkit_status="SIMULATED",
-            last_cam_ping=config.last_cam_ping,
-            last_devkit_ping=config.last_devkit_ping
-        )
-    
     return DeviceStatusResponse(
-        active_mode=config.active_mode,
+        active_mode="REAL_HARDWARE",
         esp32_cam_ip=config.esp32_cam_ip,
         esp32_devkit_ip=config.esp32_devkit_ip,
         cam_status=config.cam_status,
@@ -68,16 +57,6 @@ async def test_connection(payload: DevicePingRequest, db: Session = Depends(get_
     config = get_or_create_device_config(db)
     target_ip = payload.ip or (config.esp32_cam_ip if payload.device == "CAM" else config.esp32_devkit_ip)
     
-    # If explicitly in simulation mode and force_real is false, simulate ping
-    if config.active_mode == "SIMULATION" and not payload.force_real:
-        return DevicePingResponse(
-            device=payload.device,
-            ip=target_ip,
-            online=True,
-            status_message=f"{payload.device} responding (Simulation Mode)",
-            latency_ms=12.5
-        )
-        
     status = await hardware_service.ping_device(
         device_type=payload.device,
         ip=target_ip,
@@ -168,31 +147,16 @@ async def test_devkit_sort(payload: DevKitTestSortRequest, db: Session = Depends
 @router.post("/camera/capture")
 async def capture_from_camera(db: Session = Depends(get_db)):
     """
-    Captures a frame from ESP32-CAM (or generates a simulation frame if in Simulation Mode),
+    Captures a real frame from ESP32-CAM via HardwareService,
     runs TinyML AI inference, saves the scan, and returns classification result.
-    In REAL_HARDWARE mode, zero silent fallback is permitted: if camera fails, an HTTPException is raised.
     """
     config = get_or_create_device_config(db)
     
-    if config.active_mode == "SIMULATION":
-        # Generate clean synthetic test image (e.g. simulated sample)
-        import io
-        from PIL import Image, ImageDraw
-        img = Image.new("RGB", (320, 240), color=(30, 41, 59))
-        draw = ImageDraw.Draw(img)
-        draw.rectangle([50, 40, 270, 200], fill=(24, 76, 120), outline=(56, 189, 248), width=3)
-        draw.text((80, 110), "PLASTIC BOTTLE DETECTED", fill=(255, 255, 255))
-        buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=90)
-        image_bytes = buf.getvalue()
-        source = "ESP32_CAM_SIMULATION"
-    else:
-        # Real Hardware Mode: Proxy request to ESP32-CAM via HardwareService
-        image_bytes = await hardware_service.capture_frame_from_cam(
-            ip=config.esp32_cam_ip,
-            timeout=float(config.camera_timeout_seconds)
-        )
-        source = "ESP32_CAM"
+    image_bytes = await hardware_service.capture_frame_from_cam(
+        ip=config.esp32_cam_ip,
+        timeout=float(config.camera_timeout_seconds)
+    )
+    source = "ESP32_CAM"
 
     from app.ai.inference_service import inference_service
     prediction = inference_service.classify_image_bytes(
@@ -205,15 +169,17 @@ async def capture_from_camera(db: Session = Depends(get_db)):
 
 @router.post("/mode", response_model=ModeSwitchResponse)
 def set_operating_mode(payload: ModeSwitchRequest, db: Session = Depends(get_db)):
-    target_mode = payload.mode.upper()
-    if target_mode not in ["SIMULATION", "REAL_HARDWARE"]:
-        raise HTTPException(status_code=400, detail="Invalid mode. Must be SIMULATION or REAL_HARDWARE.")
-        
     config = get_or_create_device_config(db)
-    prev_mode = config.active_mode
-    config.active_mode = target_mode
+    config.active_mode = "REAL_HARDWARE"
+    config.cam_status = "ONLINE"
+    config.devkit_status = "ONLINE"
+    db.commit()
     
-    if target_mode == "SIMULATION":
+    return ModeSwitchResponse(
+        previous_mode="REAL_HARDWARE",
+        active_mode="REAL_HARDWARE",
+        message="Operating mode permanently set to REAL_HARDWARE"
+    )
         config.cam_status = "SIMULATED"
         config.devkit_status = "SIMULATED"
     else:

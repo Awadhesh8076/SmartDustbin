@@ -2,7 +2,6 @@ import React, { useState, useEffect } from 'react';
 import {
   Trash2,
   Cpu,
-  Laptop,
   Compass,
   CheckCircle2,
   AlertTriangle,
@@ -70,9 +69,8 @@ const CATEGORY_CONFIG: Record<
 };
 
 export const SortingPage: React.FC = () => {
-  const { activeMode, deviceStatus } = useHardware();
+  const { deviceStatus } = useHardware();
   const { refreshBalance } = useRewards();
-  const isSim = activeMode === 'SIMULATION';
 
   // State
   const [isSorting, setIsSorting] = useState<boolean>(false);
@@ -182,24 +180,17 @@ export const SortingPage: React.FC = () => {
         <div>
           <h2 className="text-2xl font-bold text-white flex items-center gap-2.5">
             <Trash2 className="w-6 h-6 text-teal-400" />
-            Sorting Simulation & Actuation Control
+            Physical Servo Actuation & Sorting Control
           </h2>
           <p className="text-slate-400 text-sm mt-1">
             Dual-servo physical execution: Chute rotation (0°–180°) and Trapdoor release flap (0°–90°).
           </p>
         </div>
         <div className="flex items-center space-x-2">
-          {isSim ? (
-            <span className="px-3.5 py-1.5 rounded-full text-xs font-semibold bg-emerald-950/50 border border-emerald-700/60 text-emerald-300 flex items-center gap-1.5 shadow-sm">
-              <Laptop className="w-4 h-4 text-emerald-400" />
-              <span>Simulated Servos Active</span>
-            </span>
-          ) : (
-            <span className="px-3.5 py-1.5 rounded-full text-xs font-semibold bg-blue-950/50 border border-blue-700/60 text-blue-300 flex items-center gap-1.5 shadow-sm">
-              <Cpu className="w-4 h-4 text-blue-400" />
-              <span>DevKit Hardware (GPIO 18 & 19)</span>
-            </span>
-          )}
+          <span className="px-3.5 py-1.5 rounded-full text-xs font-semibold bg-blue-950/50 border border-blue-700/60 text-blue-300 flex items-center gap-1.5 shadow-sm">
+            <Cpu className="w-4 h-4 text-blue-400" />
+            <span>ESP32 DevKit Active (GPIO 18 & 19)</span>
+          </span>
         </div>
       </div>
 
@@ -401,7 +392,7 @@ export const SortingPage: React.FC = () => {
               </div>
               <div className="flex justify-between text-slate-400">
                 <span>Execution Mode:</span>
-                <span className="font-mono text-emerald-400 font-semibold">{activeMode}</span>
+                <span className="font-mono text-emerald-400 font-semibold">REAL_HARDWARE</span>
               </div>
             </div>
           </div>

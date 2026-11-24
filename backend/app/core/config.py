@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     # Hardware Defaults
     DEFAULT_ESP32_CAM_IP: str = "192.168.4.1"
     DEFAULT_ESP32_DEVKIT_IP: str = "192.168.4.20"
-    DEFAULT_MODE: str = "SIMULATION"  # SIMULATION or REAL_HARDWARE
+    DEFAULT_MODE: str = "REAL_HARDWARE"
     
     # AI Hyperparameters (Ported from Unity AIConfig.cs)
     INPUT_WIDTH: int = 128
