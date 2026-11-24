@@ -1,5 +1,4 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
 import {
   ScanLine,
   Camera,
@@ -12,24 +11,35 @@ import {
   Cpu,
   Layers,
   History,
-  Trash2,
+  Play,
+  Wifi,
+  ShieldAlert,
+  ArrowRight
 } from 'lucide-react';
 import { useHardware } from '../context/HardwareContext';
+import { useRewards } from '../context/RewardsContext';
 import { api } from '../services/api';
-import { DetectionResult, DetectionHistoryItem, WasteCategory } from '../types/api';
+import { DetectionResult, DetectionHistoryItem, WasteCategory, SortingExecuteResponse } from '../types/api';
 
-const CATEGORY_COLORS: Record<WasteCategory, { bg: string; text: string; border: string; bar: string }> = {
-  PLASTIC: { bg: 'bg-blue-950/60', text: 'text-blue-400', border: 'border-blue-600/60', bar: 'bg-blue-500' },
-  METAL: { bg: 'bg-amber-950/60', text: 'text-amber-400', border: 'border-amber-600/60', bar: 'bg-amber-500' },
-  WET: { bg: 'bg-emerald-950/60', text: 'text-emerald-400', border: 'border-emerald-600/60', bar: 'bg-emerald-500' },
-  DRY: { bg: 'bg-purple-950/60', text: 'text-purple-400', border: 'border-purple-600/60', bar: 'bg-purple-500' },
-  UNKNOWN: { bg: 'bg-slate-800', text: 'text-slate-400', border: 'border-slate-700', bar: 'bg-slate-500' },
+const CATEGORY_COLORS: Record<WasteCategory, { bg: string; text: string; border: string; bar: string; label: string }> = {
+  PLASTIC: { bg: 'bg-blue-950/60', text: 'text-blue-400', border: 'border-blue-600/60', bar: 'bg-blue-500', label: 'Compartment 1 (Chute CW 400ms)' },
+  METAL: { bg: 'bg-amber-950/60', text: 'text-amber-400', border: 'border-amber-600/60', bar: 'bg-amber-500', label: 'Compartment 2 (Chute CW 800ms)' },
+  WET: { bg: 'bg-emerald-950/60', text: 'text-emerald-400', border: 'border-emerald-600/60', bar: 'bg-emerald-500', label: 'Compartment 3 (Chute CW 1200ms)' },
+  DRY: { bg: 'bg-purple-950/60', text: 'text-purple-400', border: 'border-purple-600/60', bar: 'bg-purple-500', label: 'Compartment 4 (Chute CW 1600ms)' },
+  UNKNOWN: { bg: 'bg-slate-800', text: 'text-slate-400', border: 'border-slate-700', bar: 'bg-slate-500', label: 'Locked (Cannot Actuate)' },
+};
+
+const COMPARTMENT_DETAILS: Record<Exclude<WasteCategory, 'UNKNOWN'>, { name: string; coins: number; angle: number; desc: string }> = {
+  PLASTIC: { name: 'Plastic Bin', coins: 3, angle: 45, desc: 'Servo 1: CW 400ms | Flap 90° for 1.2s' },
+  METAL: { name: 'Metal Bin', coins: 5, angle: 90, desc: 'Servo 1: CW 800ms | Flap 90° for 1.2s' },
+  WET: { name: 'Wet / Organic Bin', coins: 1, angle: 135, desc: 'Servo 1: CW 1200ms | Flap 90° for 1.2s' },
+  DRY: { name: 'Dry / Paper Bin', coins: 2, angle: 180, desc: 'Servo 1: CW 1600ms | Flap 90° for 1.2s' },
 };
 
 export const DetectionPage: React.FC = () => {
-  const navigate = useNavigate();
-  const { activeMode } = useHardware();
-  const [sourceMode, setSourceMode] = useState<'WEBCAM' | 'UPLOAD' | 'ESP32'>('WEBCAM');
+  const { activeMode, deviceStatus, refreshStatus } = useHardware();
+  const { refreshBalance } = useRewards();
+  const [sourceMode, setSourceMode] = useState<'ESP32' | 'WEBCAM' | 'UPLOAD'>('ESP32');
 
   // Webcam state
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -45,12 +55,24 @@ export const DetectionPage: React.FC = () => {
   // Inference state
   const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
   const [result, setResult] = useState<DetectionResult | null>(null);
+  const [captureError, setCaptureError] = useState<string | null>(null);
   const [teachStatus, setTeachStatus] = useState<string | null>(null);
   const [isTeaching, setIsTeaching] = useState<boolean>(false);
+
+  // Button-Controlled Sorting State
+  const [selectedCategory, setSelectedCategory] = useState<WasteCategory>('UNKNOWN');
+  const [isSorting, setIsSorting] = useState<boolean>(false);
+  const [sortingProgressStage, setSortingProgressStage] = useState<string | null>(null);
+  const [sortingResult, setSortingResult] = useState<SortingExecuteResponse | null>(null);
+  const [sortingError, setSortingError] = useState<string | null>(null);
 
   // History state
   const [history, setHistory] = useState<DetectionHistoryItem[]>([]);
   const [isLoadingHistory, setIsLoadingHistory] = useState<boolean>(false);
+
+  const isSim = activeMode === 'SIMULATION';
+  const camOnline = deviceStatus?.cam_status === 'ONLINE' || (isSim && deviceStatus?.cam_status === 'SIMULATED');
+  const devkitOnline = deviceStatus?.devkit_status === 'ONLINE' || (isSim && deviceStatus?.devkit_status === 'SIMULATED');
 
   // Load detection history on mount
   const loadHistory = async () => {
@@ -67,12 +89,24 @@ export const DetectionPage: React.FC = () => {
 
   useEffect(() => {
     loadHistory();
+    refreshStatus();
     return () => {
       stopCamera();
     };
   }, []);
 
-  // Camera Management
+  // Update selectedCategory whenever a new AI classification result arrives
+  useEffect(() => {
+    if (result) {
+      setSelectedCategory(result.category);
+      // Reset previous sorting execution states
+      setSortingResult(null);
+      setSortingError(null);
+      setSortingProgressStage(null);
+    }
+  }, [result]);
+
+  // Webcam Management
   const startCamera = async () => {
     setCameraError(null);
     try {
@@ -146,30 +180,39 @@ export const DetectionPage: React.FC = () => {
   const handleESP32Capture = async () => {
     setIsAnalyzing(true);
     setResult(null);
+    setCaptureError(null);
     setTeachStatus(null);
+    setSortingResult(null);
+    setSortingError(null);
     try {
+      // In REAL_HARDWARE mode, calls FastAPI /api/devices/camera/capture which requests http://<CAM_IP>/capture
       const res = await api.captureCameraFrame();
       setResult(res);
       setPreviewUrl(res.image_url);
       await loadHistory();
     } catch (err: any) {
-      alert(`Capture failed: ${err.response?.data?.detail || err.message}`);
+      const msg = err.response?.data?.detail || err.message;
+      setCaptureError(msg);
     } finally {
       setIsAnalyzing(false);
     }
   };
 
-  // Execute Classification
+  // Classification via Upload / Webcam
   const executeClassification = async (fileBlob: Blob | File, source: string) => {
     setIsAnalyzing(true);
     setResult(null);
+    setCaptureError(null);
     setTeachStatus(null);
+    setSortingResult(null);
+    setSortingError(null);
     try {
       const res = await api.scanImage(fileBlob, source);
       setResult(res);
       await loadHistory();
     } catch (err: any) {
-      alert(`Classification error: ${err.response?.data?.detail || err.message}`);
+      const msg = err.response?.data?.detail || err.message;
+      setCaptureError(msg);
     } finally {
       setIsAnalyzing(false);
     }
@@ -192,15 +235,45 @@ export const DetectionPage: React.FC = () => {
               confidence_level: 'HIGH',
               requires_user_label: false,
               is_known_in_memory: true,
-              message: `Learned! Next scan of this material will be recognized as ${res.immediate_new_prediction}`,
+              message: `Learned! Model updated for ${res.immediate_new_prediction}`,
             }
           : null
       );
+      setSelectedCategory(res.immediate_new_prediction);
       await loadHistory();
     } catch (err: any) {
       alert(`Teaching failed: ${err.response?.data?.detail || err.message}`);
     } finally {
       setIsTeaching(false);
+    }
+  };
+
+  // Button-Controlled Sorting Execution
+  const handleConfirmAndSort = async () => {
+    if (!result || selectedCategory === 'UNKNOWN') return;
+    setIsSorting(true);
+    setSortingResult(null);
+    setSortingError(null);
+    setSortingProgressStage('Sending sort command to FastAPI...');
+
+    try {
+      // Step 1: Dispatch to FastAPI
+      setSortingProgressStage(`Actuating servos: Rotating 360° chute to ${selectedCategory} & opening 180° flap...`);
+      
+      const response = await api.executeSorting(selectedCategory, result.detection_id);
+      
+      setSortingResult(response);
+      setSortingProgressStage(null);
+
+      // Refresh rewards balance immediately upon confirmed sorting
+      await refreshBalance();
+      await loadHistory();
+    } catch (err: any) {
+      const errMsg = err.response?.data?.detail || err.message || 'Sorting execution failed';
+      setSortingError(errMsg);
+      setSortingProgressStage(null);
+    } finally {
+      setIsSorting(false);
     }
   };
 
@@ -214,15 +287,30 @@ export const DetectionPage: React.FC = () => {
         <div>
           <h2 className="text-2xl font-bold text-white flex items-center gap-2.5">
             <ScanLine className="w-6 h-6 text-emerald-400" />
-            Waste Detection & AI Classification
+            Button-Controlled Waste Classification & Sorting
           </h2>
           <p className="text-slate-400 text-sm mt-1">
-            Center-crops to 128×128, extracts 32-D features, and evaluates Pearson correlation similarity against memory.
+            Capture image $\to$ AI classifies waste $\to$ Review prediction $\to$ Click <strong>CONFIRM & SORT</strong> to actuate servos.
           </p>
         </div>
 
         {/* Source Selector Pills */}
         <div className="flex items-center bg-slate-800 p-1 rounded-xl border border-slate-700/80 shrink-0">
+          <button
+            onClick={() => {
+              setSourceMode('ESP32');
+              stopCamera();
+            }}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+              sourceMode === 'ESP32'
+                ? 'bg-blue-600 text-white shadow-sm'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <Cpu className="w-3.5 h-3.5" />
+            <span>ESP32-CAM</span>
+          </button>
+
           <button
             onClick={() => {
               setSourceMode('WEBCAM');
@@ -252,47 +340,119 @@ export const DetectionPage: React.FC = () => {
             <Upload className="w-3.5 h-3.5" />
             <span>Upload File</span>
           </button>
-
-          <button
-            onClick={() => {
-              setSourceMode('ESP32');
-              stopCamera();
-            }}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-              sourceMode === 'ESP32'
-                ? 'bg-blue-600 text-white shadow-sm'
-                : 'text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            <Cpu className="w-3.5 h-3.5" />
-            <span>ESP32-CAM</span>
-          </button>
         </div>
       </div>
 
-      {/* Main Grid: Viewfinder & Prediction Panel */}
+      {/* Hardware Connection Status Bar */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+        {/* ESP32-CAM Status */}
+        <div className="bg-slate-800/80 border border-slate-700/60 rounded-xl p-3 flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <Camera className="w-4 h-4 text-emerald-400" />
+            <div>
+              <div className="text-xs font-bold text-white">ESP32-CAM Node</div>
+              <div className="text-[11px] font-mono text-slate-400">{deviceStatus?.esp32_cam_ip || '192.168.4.10'}</div>
+            </div>
+          </div>
+          <span className={`px-2 py-0.5 rounded text-[11px] font-mono font-semibold ${
+            camOnline ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-rose-950/60 text-rose-300 border border-rose-800/60'
+          }`}>
+            {deviceStatus?.cam_status || (isSim ? 'SIMULATED' : 'OFFLINE')}
+          </span>
+        </div>
+
+        {/* ESP32 DevKit Status */}
+        <div className="bg-slate-800/80 border border-slate-700/60 rounded-xl p-3 flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <Cpu className="w-4 h-4 text-blue-400" />
+            <div>
+              <div className="text-xs font-bold text-white">ESP32 DevKit Sorter</div>
+              <div className="text-[11px] font-mono text-slate-400">{deviceStatus?.esp32_devkit_ip || '192.168.4.20'}</div>
+            </div>
+          </div>
+          <span className={`px-2 py-0.5 rounded text-[11px] font-mono font-semibold ${
+            devkitOnline ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-rose-950/60 text-rose-300 border border-rose-800/60'
+          }`}>
+            {deviceStatus?.devkit_status || (isSim ? 'SIMULATED' : 'OFFLINE')}
+          </span>
+        </div>
+
+        {/* Active Mode */}
+        <div className="bg-slate-800/80 border border-slate-700/60 rounded-xl p-3 flex items-center justify-between sm:col-span-2 lg:col-span-1">
+          <div className="flex items-center gap-2.5">
+            <Wifi className="w-4 h-4 text-amber-400" />
+            <div>
+              <div className="text-xs font-bold text-white">Operating Mode</div>
+              <div className="text-[11px] text-slate-400">{isSim ? 'Virtual Simulation' : 'Physical Hardware'}</div>
+            </div>
+          </div>
+          <span className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold ${
+            isSim ? 'bg-emerald-950/80 text-emerald-300 border border-emerald-700/60' : 'bg-blue-900/60 text-blue-300 border border-blue-600/60'
+          }`}>
+            {activeMode}
+          </span>
+        </div>
+      </div>
+
+      {/* Camera Capture Error Banner (Zero Silent Fallback) */}
+      {captureError && (
+        <div className="p-4 rounded-xl bg-rose-950/60 border border-rose-700/60 text-xs text-rose-300 flex items-start gap-3 shadow-lg">
+          <AlertTriangle className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
+          <div>
+            <div className="font-bold text-white">Hardware Capture Error (Zero Silent Fallback)</div>
+            <div className="mt-0.5 font-mono">{captureError}</div>
+            <div className="text-slate-400 mt-1">
+              Verify ESP32-CAM power supply (5V 2A), check Wi-Fi connection in Serial Monitor, and ensure the correct IP is saved in Device Management.
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Main Grid: Viewfinder & Prediction / Sorting Panel */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Left Column: Input Source (Webcam / Upload / ESP32) */}
-        <div className="lg:col-span-7 bg-slate-800/60 border border-slate-700/60 rounded-2xl p-6 flex flex-col justify-between shadow-xl min-h-[460px]">
+        {/* Left Column: Viewfinder & Image Capture */}
+        <div className="lg:col-span-6 bg-slate-800/60 border border-slate-700/60 rounded-2xl p-6 flex flex-col justify-between shadow-xl min-h-[480px]">
           {/* Top Bar */}
           <div className="flex items-center justify-between border-b border-slate-700/60 pb-3 mb-4">
             <span className="text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-2">
               <Camera className="w-4 h-4 text-emerald-400" />
+              {sourceMode === 'ESP32' && `ESP32-CAM Frame Capture`}
               {sourceMode === 'WEBCAM' && 'Live Browser Viewfinder'}
               {sourceMode === 'UPLOAD' && 'Image Upload & Dropzone'}
-              {sourceMode === 'ESP32' && `ESP32-CAM Stream (${activeMode})`}
             </span>
-            <span className="text-xs font-mono text-slate-400">128 × 128 Bilinear Target</span>
+            <span className="text-xs font-mono text-slate-400">128 × 128 Center Crop</span>
           </div>
 
           {/* Center Display Area */}
           <div className="flex-1 flex flex-col items-center justify-center relative overflow-hidden rounded-xl bg-slate-950/80 border border-slate-800 p-2 min-h-[300px]">
-            {/* Mode 1: Webcam Feed */}
+            {/* Mode 1: ESP32-CAM Snapshot */}
+            {sourceMode === 'ESP32' && (
+              <div className="w-full h-full flex flex-col items-center justify-center p-4 text-center">
+                {previewUrl ? (
+                  <div className="max-h-[320px] flex flex-col items-center">
+                    <img src={previewUrl} alt="ESP32 snapshot" className="max-h-[250px] rounded-lg object-contain shadow-lg mb-2 border border-slate-700" />
+                    <span className="text-[11px] text-slate-400 font-mono">Captured frame ready for classification</span>
+                  </div>
+                ) : (
+                  <div>
+                    <Cpu className="w-14 h-14 text-blue-400/60 mx-auto mb-3" />
+                    <h4 className="text-sm font-semibold text-white mb-1">Live Waste Image Capture</h4>
+                    <p className="text-xs text-slate-400 max-w-sm mb-4">
+                      {isSim
+                        ? 'Simulation Mode: Generates synthetic test camera frames for classification testing.'
+                        : `Real Hardware Mode: Queries http://${deviceStatus?.esp32_cam_ip || '192.168.4.10'}/capture directly over Wi-Fi.`}
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Mode 2: Webcam Feed */}
             {sourceMode === 'WEBCAM' && (
               <div className="w-full h-full flex flex-col items-center justify-center relative">
                 <video
                   ref={videoRef}
-                  className={`w-full max-h-[340px] object-contain rounded-lg ${isCameraActive ? 'block' : 'hidden'}`}
+                  className={`w-full max-h-[320px] object-contain rounded-lg ${isCameraActive ? 'block' : 'hidden'}`}
                   autoPlay
                   playsInline
                   muted
@@ -303,7 +463,7 @@ export const DetectionPage: React.FC = () => {
                     <Camera className="w-12 h-12 text-slate-600 mx-auto mb-3" />
                     <p className="text-sm font-semibold text-slate-300 mb-1">Webcam Inactive</p>
                     <p className="text-xs text-slate-500 max-w-sm mb-4">
-                      Enable your browser camera to capture real-world waste items for classification.
+                      Enable your browser camera to capture waste items for classification.
                     </p>
                     <button
                       onClick={startCamera}
@@ -329,7 +489,7 @@ export const DetectionPage: React.FC = () => {
               </div>
             )}
 
-            {/* Mode 2: Drag & Drop Upload */}
+            {/* Mode 3: Drag & Drop Upload */}
             {sourceMode === 'UPLOAD' && (
               <div
                 onDragOver={(e) => {
@@ -383,54 +543,34 @@ export const DetectionPage: React.FC = () => {
                 )}
               </div>
             )}
-
-            {/* Mode 3: ESP32-CAM Snapshot */}
-            {sourceMode === 'ESP32' && (
-              <div className="w-full h-full flex flex-col items-center justify-center p-6 text-center">
-                {previewUrl ? (
-                  <div className="max-h-[300px] flex flex-col items-center">
-                    <img src={previewUrl} alt="ESP32 snapshot" className="max-h-[220px] rounded-lg object-contain shadow-lg mb-3" />
-                    <span className="text-[11px] text-slate-400 font-mono mb-3">Frame captured from ESP32 camera node</span>
-                  </div>
-                ) : (
-                  <div>
-                    <Cpu className="w-12 h-12 text-blue-400/60 mx-auto mb-3" />
-                    <h4 className="text-sm font-semibold text-white mb-1">ESP32-CAM Frame Capture</h4>
-                    <p className="text-xs text-slate-400 max-w-sm mb-4">
-                      {activeMode === 'SIMULATION'
-                        ? 'Simulation Mode: Generates synthetic test camera frames for testing AI classification.'
-                        : 'Real Hardware Mode: Requests live HTTP snapshot from 192.168.4.10/capture.'}
-                    </p>
-                  </div>
-                )}
-
-                <button
-                  onClick={handleESP32Capture}
-                  disabled={isAnalyzing}
-                  className="px-5 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold shadow-lg shadow-blue-600/20 transition-all flex items-center gap-2"
-                >
-                  {isAnalyzing ? (
-                    <>
-                      <RefreshCw className="w-4 h-4 animate-spin" />
-                      <span>Capturing & Analyzing...</span>
-                    </>
-                  ) : (
-                    <>
-                      <Camera className="w-4 h-4" />
-                      <span>Capture from ESP32-CAM</span>
-                    </>
-                  )}
-                </button>
-              </div>
-            )}
           </div>
 
           {/* Action Bar */}
           <div className="border-t border-slate-700/60 pt-4 flex items-center justify-between mt-4">
-            {sourceMode === 'WEBCAM' ? (
+            {sourceMode === 'ESP32' && (
+              <button
+                onClick={handleESP32Capture}
+                disabled={isAnalyzing || isSorting}
+                className="w-full py-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold shadow-lg shadow-blue-600/30 transition-all flex items-center justify-center gap-2"
+              >
+                {isAnalyzing ? (
+                  <>
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                    <span>Capturing Image & Running AI...</span>
+                  </>
+                ) : (
+                  <>
+                    <Camera className="w-4 h-4" />
+                    <span>Capture Image from ESP32-CAM</span>
+                  </>
+                )}
+              </button>
+            )}
+
+            {sourceMode === 'WEBCAM' && (
               <div className="flex items-center gap-3 w-full justify-between">
                 <span className="text-xs text-slate-400">
-                  {isCameraActive ? 'Camera streaming active' : 'Click start to open viewfinder'}
+                  {isCameraActive ? 'Live stream active' : 'Click start to open webcam'}
                 </span>
                 <div className="flex gap-2">
                   {isCameraActive ? (
@@ -439,15 +579,15 @@ export const DetectionPage: React.FC = () => {
                         onClick={stopCamera}
                         className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium border border-slate-700"
                       >
-                        Stop Camera
+                        Stop
                       </button>
                       <button
                         onClick={captureWebcamFrame}
-                        disabled={isAnalyzing}
+                        disabled={isAnalyzing || isSorting}
                         className="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow-lg shadow-emerald-600/20 transition-all flex items-center gap-1.5"
                       >
                         {isAnalyzing ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
-                        <span>Capture & Classify</span>
+                        <span>Capture Frame</span>
                       </button>
                     </>
                   ) : (
@@ -460,23 +600,25 @@ export const DetectionPage: React.FC = () => {
                   )}
                 </div>
               </div>
-            ) : (
+            )}
+
+            {sourceMode === 'UPLOAD' && (
               <div className="flex items-center justify-between w-full text-xs text-slate-400">
-                <span>Direct FastAPI preprocessing pipeline</span>
+                <span>Select or drop a file to classify</span>
                 <span>Aspect: Center-Crop 1:1</span>
               </div>
             )}
           </div>
         </div>
 
-        {/* Right Column: Classification Results & Learning Panel */}
-        <div className="lg:col-span-5 space-y-6">
-          {/* Main Prediction Card */}
-          <div className="bg-slate-800/60 border border-slate-700/60 rounded-2xl p-6 shadow-xl flex flex-col justify-between">
-            <div className="flex items-center justify-between border-b border-slate-700/60 pb-3 mb-4">
+        {/* Right Column: AI Results & Button-Controlled Sorting */}
+        <div className="lg:col-span-6 space-y-5">
+          {/* Main Prediction & Sorting Card */}
+          <div className="bg-slate-800/60 border border-slate-700/60 rounded-2xl p-6 shadow-xl flex flex-col justify-between space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-700/60 pb-3">
               <span className="text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-2">
                 <Sparkles className="w-4 h-4 text-emerald-400" />
-                AI Inference Result
+                AI Prediction & Sorter Control
               </span>
               <span className="text-xs font-mono text-slate-400">{result?.model_version || 'v1.0 TinyML'}</span>
             </div>
@@ -484,114 +626,182 @@ export const DetectionPage: React.FC = () => {
             {isAnalyzing ? (
               <div className="py-12 text-center">
                 <RefreshCw className="w-10 h-10 text-emerald-400 animate-spin mx-auto mb-3" />
-                <h4 className="text-sm font-semibold text-white">Extracting 32-D Features...</h4>
-                <p className="text-xs text-slate-400 mt-1">Evaluating Pearson correlation against trained centroids</p>
+                <h4 className="text-sm font-semibold text-white">Extracting 32-D TinyML Features...</h4>
+                <p className="text-xs text-slate-400 mt-1">Evaluating Pearson correlation ($r \ge 0.70$) against memory centroids</p>
               </div>
             ) : result ? (
               <div className="space-y-4">
                 {/* Result Hero Banner */}
                 <div
-                  className={`p-5 rounded-xl border text-center ${
+                  className={`p-4 rounded-xl border text-center ${
                     CATEGORY_COLORS[result.category].bg
                   } ${CATEGORY_COLORS[result.category].border}`}
                 >
-                  <div className="text-xs uppercase tracking-wider font-semibold text-slate-400 mb-1">
-                    {result.category === 'UNKNOWN' ? 'Unrecognized Material' : 'Detected Waste Category'}
+                  <div className="text-xs uppercase tracking-wider font-semibold text-slate-400 mb-0.5">
+                    {result.category === 'UNKNOWN' ? 'Zero-Guessing: Unrecognized Material' : 'Detected Waste Category'}
                   </div>
                   <div className={`text-3xl font-extrabold ${CATEGORY_COLORS[result.category].text}`}>
                     {result.category}
                   </div>
-                  <div className="text-xs font-medium text-slate-300 mt-1">
-                    Confidence: {(result.confidence * 100).toFixed(1)}% ({result.confidence_level})
+                  <div className="text-xs font-medium text-slate-300 mt-1 flex items-center justify-center gap-3">
+                    <span>Confidence: <strong>{(result.confidence * 100).toFixed(1)}%</strong> ({result.confidence_level})</span>
+                    <span>Pearson Similarity: <strong>{result.similarity.toFixed(4)}</strong></span>
                   </div>
                 </div>
 
-                {/* Similarity & Memory status */}
-                <div className="bg-slate-900/60 border border-slate-800 rounded-xl p-3.5 space-y-2 text-xs">
-                  <div className="flex items-center justify-between">
-                    <span className="text-slate-400">Pearson Similarity (r):</span>
-                    <span className="font-mono font-bold text-white">{result.similarity.toFixed(4)}</span>
+                {/* Target Compartment Selector */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-semibold text-slate-300">Target Sorting Compartment:</span>
+                    <span className="text-slate-400 text-[11px]">Click to change before actuating</span>
                   </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-slate-400">Memory Match Threshold:</span>
-                    <span className="font-mono text-slate-300">r ≥ 0.70</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-slate-400">In Trained Memory:</span>
-                    <span className={result.is_known_in_memory ? 'text-emerald-400 font-semibold' : 'text-amber-400 font-semibold'}>
-                      {result.is_known_in_memory ? 'Yes (Centroid / Exemplar)' : 'No (Zero-Guessing)'}
-                    </span>
-                  </div>
-                </div>
 
-                {/* Probability Distribution */}
-                <div>
-                  <div className="text-xs font-semibold text-slate-300 mb-2 flex items-center justify-between">
-                    <span>Softmax Probability Distribution</span>
-                    <span className="text-[11px] text-slate-500 font-normal">W, D, P, M</span>
-                  </div>
-                  <div className="space-y-1.5">
-                    {Object.entries(result.probabilities).map(([cat, prob]) => {
-                      const typedCat = cat as WasteCategory;
-                      const colors = CATEGORY_COLORS[typedCat] || CATEGORY_COLORS.UNKNOWN;
-                      const pct = Math.round(prob * 100);
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    {(['PLASTIC', 'METAL', 'WET', 'DRY'] as Array<Exclude<WasteCategory, 'UNKNOWN'>>).map((cat) => {
+                      const isSelected = selectedCategory === cat;
+                      const details = COMPARTMENT_DETAILS[cat];
                       return (
-                        <div key={cat} className="space-y-0.5">
-                          <div className="flex justify-between text-[11px]">
-                            <span className="font-semibold text-slate-300">{cat}</span>
-                            <span className="font-mono text-slate-400">{pct}%</span>
+                        <button
+                          key={cat}
+                          onClick={() => setSelectedCategory(cat)}
+                          disabled={isSorting}
+                          className={`p-2.5 rounded-xl border text-left transition-all ${
+                            isSelected
+                              ? 'bg-blue-600/30 border-blue-500 text-white shadow-lg'
+                              : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:border-slate-700'
+                          }`}
+                        >
+                          <div className="text-[11px] font-bold text-white flex items-center justify-between">
+                            <span>{cat}</span>
+                            <span className="text-amber-400 text-[10px]">+{details.coins}¢</span>
                           </div>
-                          <div className="w-full h-1.5 bg-slate-900 rounded-full overflow-hidden">
-                            <div className={`h-full ${colors.bar} rounded-full transition-all`} style={{ width: `${pct}%` }} />
-                          </div>
-                        </div>
+                          <div className="text-[10px] text-slate-400 mt-0.5">{details.name}</div>
+                          <div className="text-[9px] text-slate-500 mt-0.5 font-mono">{details.angle}° chute</div>
+                        </button>
                       );
                     })}
                   </div>
                 </div>
 
-                {/* User-Assisted Teaching Prompt (When UNKNOWN or Requires Label) */}
+                {/* UNKNOWN Safety Guard Alert */}
+                {selectedCategory === 'UNKNOWN' && (
+                  <div className="bg-amber-950/50 border border-amber-600/60 rounded-xl p-3.5 text-xs text-amber-300 flex items-start gap-2.5">
+                    <ShieldAlert className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+                    <div>
+                      <div className="font-bold text-white">Motor Actuation Locked (Zero-Guessing Guard)</div>
+                      <p className="mt-0.5 text-slate-300 text-[11px]">
+                        The material similarity ($r = {result.similarity.toFixed(3)}$) is below the 0.70 threshold. Servos cannot be actuated for UNKNOWN items. Select a verified compartment above or teach the material below.
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {/* THE CORE CONFIRM & SORT BUTTON */}
+                <div className="pt-2">
+                  <button
+                    onClick={handleConfirmAndSort}
+                    disabled={isSorting || selectedCategory === 'UNKNOWN'}
+                    className={`w-full py-3.5 px-5 rounded-xl font-bold text-sm shadow-xl transition-all flex items-center justify-center gap-2.5 ${
+                      selectedCategory === 'UNKNOWN'
+                        ? 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700'
+                        : isSorting
+                        ? 'bg-blue-700 text-white cursor-wait'
+                        : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-600/30 hover:scale-[1.01]'
+                    }`}
+                  >
+                    {isSorting ? (
+                      <>
+                        <RefreshCw className="w-5 h-5 animate-spin" />
+                        <span>Actuating Servos: Sorting into {selectedCategory}...</span>
+                      </>
+                    ) : selectedCategory === 'UNKNOWN' ? (
+                      <>
+                        <ShieldAlert className="w-5 h-5 text-amber-400" />
+                        <span>Locked: Select a Category to Sort</span>
+                      </>
+                    ) : (
+                      <>
+                        <Play className="w-5 h-5 fill-current" />
+                        <span>CONFIRM & SORT INTO {selectedCategory}</span>
+                        <ArrowRight className="w-4 h-4 ml-1 opacity-70" />
+                      </>
+                    )}
+                  </button>
+
+                  <div className="text-center text-[11px] text-slate-400 mt-1.5">
+                    {isSorting
+                      ? 'Executing dual-servo routine: 360° chute rotation & 180° flap drop...'
+                      : 'Nothing moves until you click this button. Explicit confirmation required.'}
+                  </div>
+                </div>
+
+                {/* Sorting Progress / Stage Tracker */}
+                {sortingProgressStage && (
+                  <div className="p-3 bg-blue-950/50 border border-blue-600/60 rounded-xl text-xs text-blue-300 flex items-center gap-2 animate-in fade-in">
+                    <RefreshCw className="w-4 h-4 animate-spin text-blue-400 shrink-0" />
+                    <span>{sortingProgressStage}</span>
+                  </div>
+                )}
+
+                {/* Sorting Success Result */}
+                {sortingResult && (
+                  <div className="p-4 bg-emerald-950/60 border border-emerald-500/60 rounded-xl text-xs text-emerald-300 space-y-1.5 animate-in fade-in shadow-lg">
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold text-white flex items-center gap-2">
+                        <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                        Sorting Confirmed by ESP32 DevKit!
+                      </span>
+                      <span className="bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded text-[10px] font-mono">
+                        +{sortingResult.coins_earned} Coins
+                      </span>
+                    </div>
+                    <div className="text-slate-200 text-[11px]">{sortingResult.message}</div>
+                    <div className="flex justify-between text-[10px] text-slate-400 pt-1 border-t border-emerald-900/60 font-mono">
+                      <span>Mode: {sortingResult.mode}</span>
+                      <span>Execution Duration: {sortingResult.execution_duration_seconds}s</span>
+                      <span>New Balance: {sortingResult.balance_after}¢</span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Sorting Error Banner */}
+                {sortingError && (
+                  <div className="p-4 bg-rose-950/60 border border-rose-600/60 rounded-xl text-xs text-rose-300 space-y-1 animate-in fade-in shadow-lg">
+                    <div className="font-bold text-white flex items-center gap-2">
+                      <AlertTriangle className="w-4 h-4 text-rose-400" />
+                      Sorting Command Failed
+                    </div>
+                    <div className="text-slate-200 text-[11px] font-mono">{sortingError}</div>
+                    <div className="text-[10px] text-slate-400 mt-1">
+                      Check that ESP32 DevKit is powered, connected to local Wi-Fi, and port 80 is reachable.
+                    </div>
+                  </div>
+                )}
+
+                {/* User-Assisted Teaching Prompt (When UNKNOWN) */}
                 {result.requires_user_label && (
-                  <div className="bg-amber-950/40 border border-amber-600/60 rounded-xl p-4 space-y-3">
+                  <div className="bg-amber-950/30 border border-amber-600/50 rounded-xl p-3.5 space-y-2.5">
                     <div className="flex items-start gap-2">
                       <HelpCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
                       <div>
                         <h5 className="text-xs font-bold text-amber-300 uppercase">Teach AI Memory</h5>
-                        <p className="text-xs text-slate-300 mt-0.5">
-                          This item's similarity is below 0.70. Select the correct category below to teach the model (1-Shot Online Adaptation):
+                        <p className="text-[11px] text-slate-300">
+                          Confirm correct category to train the model immediately via 1-Shot Online Adaptation:
                         </p>
                       </div>
                     </div>
 
-                    <div className="grid grid-cols-2 gap-2 pt-1">
-                      <button
-                        onClick={() => handleTeachCategory('PLASTIC')}
-                        disabled={isTeaching}
-                        className="py-2 px-3 rounded-lg bg-blue-900/60 hover:bg-blue-800 border border-blue-600/80 text-blue-200 text-xs font-bold transition-all"
-                      >
-                        Teach PLASTIC
-                      </button>
-                      <button
-                        onClick={() => handleTeachCategory('METAL')}
-                        disabled={isTeaching}
-                        className="py-2 px-3 rounded-lg bg-amber-900/60 hover:bg-amber-800 border border-amber-600/80 text-amber-200 text-xs font-bold transition-all"
-                      >
-                        Teach METAL
-                      </button>
-                      <button
-                        onClick={() => handleTeachCategory('WET')}
-                        disabled={isTeaching}
-                        className="py-2 px-3 rounded-lg bg-emerald-900/60 hover:bg-emerald-800 border border-emerald-600/80 text-emerald-200 text-xs font-bold transition-all"
-                      >
-                        Teach WET / Bio
-                      </button>
-                      <button
-                        onClick={() => handleTeachCategory('DRY')}
-                        disabled={isTeaching}
-                        className="py-2 px-3 rounded-lg bg-purple-900/60 hover:bg-purple-800 border border-purple-600/80 text-purple-200 text-xs font-bold transition-all"
-                      >
-                        Teach DRY / Paper
-                      </button>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+                      {(['PLASTIC', 'METAL', 'WET', 'DRY'] as WasteCategory[]).map((cat) => (
+                        <button
+                          key={cat}
+                          onClick={() => handleTeachCategory(cat)}
+                          disabled={isTeaching}
+                          className="py-1.5 px-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-semibold text-slate-200 transition-all"
+                        >
+                          Teach {cat}
+                        </button>
+                      ))}
                     </div>
                   </div>
                 )}
@@ -603,24 +813,14 @@ export const DetectionPage: React.FC = () => {
                     <span>{teachStatus}</span>
                   </div>
                 )}
-
-                {/* Direct Action to Sorting Page when Recognized */}
-                {result.category !== 'UNKNOWN' && (
-                  <div className="pt-2">
-                    <button
-                      onClick={() => navigate('/sorting')}
-                      className="w-full py-2.5 px-4 rounded-xl bg-teal-600 hover:bg-teal-500 text-white font-bold text-xs shadow-lg shadow-teal-600/20 transition-all flex items-center justify-center gap-2"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                      <span>Proceed to Actuate & Sort into {result.category}</span>
-                    </button>
-                  </div>
-                )}
               </div>
             ) : (
               <div className="py-16 text-center text-slate-500">
-                <Layers className="w-10 h-10 mx-auto mb-2 opacity-50" />
-                <p className="text-xs">No scan performed yet. Capture or upload an image to begin.</p>
+                <Layers className="w-12 h-12 mx-auto mb-2 opacity-40 text-slate-400" />
+                <h4 className="text-sm font-semibold text-slate-300">Awaiting Waste Snapshot</h4>
+                <p className="text-xs text-slate-500 max-w-xs mx-auto mt-1">
+                  Click <strong>Capture Image from ESP32-CAM</strong> to scan waste item. Nothing will actuate until you click Confirm & Sort.
+                </p>
               </div>
             )}
           </div>
@@ -632,7 +832,7 @@ export const DetectionPage: React.FC = () => {
         <div className="flex items-center justify-between mb-4 border-b border-slate-700/60 pb-3">
           <div className="flex items-center gap-2">
             <History className="w-4 h-4 text-emerald-400" />
-            <h3 className="font-semibold text-white text-sm">Recent Detections</h3>
+            <h3 className="font-semibold text-white text-sm">Recent Detections & Sorted Items</h3>
           </div>
           <button
             onClick={loadHistory}

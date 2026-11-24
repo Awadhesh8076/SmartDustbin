@@ -5,29 +5,42 @@ import {
   Cpu,
   Camera,
   CheckCircle2,
+  AlertTriangle,
   RefreshCw,
   Save,
   Wifi,
   Compass,
-  Laptop
+  Laptop,
+  Play,
+  Sparkles,
+  ExternalLink,
+  Info
 } from 'lucide-react';
-import { DetectionResult } from '../types/api';
+import { CameraTestCaptureResponse, DevKitTestSortResponse, DetectionResult, WasteCategory } from '../types/api';
 
 export const DeviceManagementPage: React.FC = () => {
   const { deviceStatus, activeMode, refreshStatus, switchMode } = useHardware();
   const [camIp, setCamIp] = useState(deviceStatus?.esp32_cam_ip || '192.168.4.10');
   const [devkitIp, setDevkitIp] = useState(deviceStatus?.esp32_devkit_ip || '192.168.4.20');
-  const [camTimeout, setCamTimeout] = useState(4);
-  const [devkitTimeout, setDevkitTimeout] = useState(10);
+  const [camTimeout, setCamTimeout] = useState(5);
+  const [devkitTimeout, setDevkitTimeout] = useState(12);
 
-  const [pingResult, setPingResult] = useState<string | null>(null);
+  const [pingResult, setPingResult] = useState<{ device: string; message: string; isError: boolean } | null>(null);
   const [isPinging, setIsPinging] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState<boolean>(false);
   const [isSaving, setIsSaving] = useState<boolean>(false);
 
-  // Diagnostic Test Snapshot
-  const [testSnapshot, setTestSnapshot] = useState<DetectionResult | null>(null);
-  const [isTestingCamera, setIsTestingCamera] = useState<boolean>(false);
+  // Camera Live Test Frame
+  const [camCaptureResult, setCamCaptureResult] = useState<CameraTestCaptureResponse | null>(null);
+  const [isCapturing, setIsCapturing] = useState<boolean>(false);
+  const [aiDetectionResult, setAiDetectionResult] = useState<DetectionResult | null>(null);
+  const [isClassifying, setIsClassifying] = useState<boolean>(false);
+
+  // DevKit Test Sort Actuation
+  const [testSortCategory, setTestSortCategory] = useState<WasteCategory>('PLASTIC');
+  const [isSorting, setIsSorting] = useState<boolean>(false);
+  const [sortResult, setSortResult] = useState<DevKitTestSortResponse | null>(null);
+  const [sortError, setSortError] = useState<string | null>(null);
 
   const isSim = activeMode === 'SIMULATION';
 
@@ -52,9 +65,14 @@ export const DeviceManagementPage: React.FC = () => {
       });
       await refreshStatus();
       setSaveSuccess(true);
-      setTimeout(() => setSaveSuccess(false), 3000);
+      setTimeout(() => setSaveSuccess(false), 4000);
     } catch (err: any) {
       console.error('Failed to save settings:', err);
+      setPingResult({
+        device: 'CONFIG',
+        message: `Failed to save settings: ${err.response?.data?.detail || err.message}`,
+        isError: true,
+      });
     } finally {
       setIsSaving(false);
     }
@@ -65,26 +83,73 @@ export const DeviceManagementPage: React.FC = () => {
     setPingResult(null);
     try {
       const targetIp = device === 'CAM' ? camIp : devkitIp;
-      const res = await api.testDeviceConnection(device, targetIp);
-      setPingResult(`[${res.device}] ${res.online ? 'Online' : 'Offline'}: ${res.status_message}`);
+      // forceReal=true allows user to test the real physical IP even while the website operates in Simulation mode
+      const res = await api.testDeviceConnection(device, targetIp, true);
+      setPingResult({
+        device: res.device,
+        message: `${res.online ? 'Online' : 'Offline'}: ${res.status_message}`,
+        isError: !res.online,
+      });
       await refreshStatus();
     } catch (e: any) {
-      setPingResult(`Ping failed: ${e.response?.data?.detail || e.message}`);
+      setPingResult({
+        device,
+        message: `Probe failed: ${e.response?.data?.detail || e.message}`,
+        isError: true,
+      });
     } finally {
       setIsPinging(null);
     }
   };
 
-  const handleTestCapture = async () => {
-    setIsTestingCamera(true);
-    setTestSnapshot(null);
+  const handleTestCameraCapture = async () => {
+    setIsCapturing(true);
+    setCamCaptureResult(null);
+    setAiDetectionResult(null);
+    setPingResult(null);
+    try {
+      const res = await api.testCameraCapture(camIp);
+      setCamCaptureResult(res);
+    } catch (e: any) {
+      setPingResult({
+        device: 'CAM',
+        message: `Camera capture failed: ${e.response?.data?.detail || e.message}`,
+        isError: true,
+      });
+    } finally {
+      setIsCapturing(false);
+    }
+  };
+
+  const handleRunAiOnCapture = async () => {
+    setIsClassifying(true);
+    setAiDetectionResult(null);
     try {
       const res = await api.captureCameraFrame();
-      setTestSnapshot(res);
+      setAiDetectionResult(res);
     } catch (e: any) {
-      setPingResult(`Camera test capture failed: ${e.response?.data?.detail || e.message}`);
+      setPingResult({
+        device: 'AI',
+        message: `Classification failed: ${e.response?.data?.detail || e.message}`,
+        isError: true,
+      });
     } finally {
-      setIsTestingCamera(false);
+      setIsClassifying(false);
+    }
+  };
+
+  const handleTestSortActuation = async () => {
+    setIsSorting(true);
+    setSortResult(null);
+    setSortError(null);
+    try {
+      const res = await api.testDevKitSort(testSortCategory, devkitIp);
+      setSortResult(res);
+    } catch (e: any) {
+      const errMsg = e.response?.data?.detail || e.message;
+      setSortError(errMsg);
+    } finally {
+      setIsSorting(false);
     }
   };
 
@@ -95,10 +160,10 @@ export const DeviceManagementPage: React.FC = () => {
         <div>
           <h2 className="text-2xl font-bold text-white flex items-center gap-2.5">
             <Cpu className="w-6 h-6 text-emerald-400" />
-            IoT Device Management
+            Hardware & Local Network Configuration
           </h2>
           <p className="text-slate-400 text-sm mt-1">
-            Monitor connection health, configure static IP addresses, and ping ESP32 microcontrollers safely.
+            Configure dynamic Wi-Fi DHCP IP addresses for ESP32 microcontrollers, run connection diagnostics, and verify physical servo actuation.
           </p>
         </div>
         <button
@@ -119,17 +184,18 @@ export const DeviceManagementPage: React.FC = () => {
               <Laptop className="w-5 h-5 text-emerald-400" />
             </div>
             <div>
-              <div className="text-sm font-bold text-emerald-300">Simulation Mode Active (Safe Default)</div>
+              <div className="text-sm font-bold text-emerald-300">Simulation Mode Active (Safe Commissioning Default)</div>
               <div className="text-xs text-slate-300 mt-0.5">
-                Microcontroller communication is virtualized. Pings, AI frame generation, and dual-servo sequences run without physical hardware.
+                Microcontroller communication is virtualized. You can test and verify physical ESP32 IPs using the probe tools below before enabling Real Hardware Mode.
               </div>
             </div>
           </div>
           <button
             onClick={() => switchMode('REAL_HARDWARE')}
-            className="px-3.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-600 text-xs font-semibold text-slate-200 transition-colors shrink-0"
+            className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-xs font-bold text-white shadow-lg shadow-blue-600/30 transition-all shrink-0 flex items-center gap-1.5"
           >
-            Switch to Real Hardware
+            <Wifi className="w-4 h-4" />
+            <span>Enable Real Hardware Mode</span>
           </button>
         </div>
       ) : (
@@ -139,17 +205,18 @@ export const DeviceManagementPage: React.FC = () => {
               <Wifi className="w-5 h-5 text-blue-400" />
             </div>
             <div>
-              <div className="text-sm font-bold text-blue-300">Real Hardware Mode Enabled</div>
+              <div className="text-sm font-bold text-blue-300">Real Hardware Mode Enabled (Zero Silent Fallback)</div>
               <div className="text-xs text-slate-300 mt-0.5">
-                FastAPI communicates directly with ESP32-CAM ({camIp}) and DevKit ({devkitIp}) on your local subnet.
+                FastAPI communicates directly with ESP32-CAM (<span className="text-white font-mono">{camIp}</span>) and DevKit (<span className="text-white font-mono">{devkitIp}</span>). In this mode, unreachable hardware generates explicit diagnostic errors.
               </div>
             </div>
           </div>
           <button
             onClick={() => switchMode('SIMULATION')}
-            className="px-3.5 py-1.5 rounded-xl bg-emerald-900/60 hover:bg-emerald-800 border border-emerald-600 text-xs font-semibold text-emerald-200 transition-colors shrink-0"
+            className="px-4 py-2 rounded-xl bg-emerald-700/80 hover:bg-emerald-600 border border-emerald-500/50 text-xs font-bold text-emerald-100 transition-all shrink-0 flex items-center gap-1.5"
           >
-            Return to Simulation Mode
+            <Laptop className="w-4 h-4" />
+            <span>Switch to Simulation</span>
           </button>
         </div>
       )}
@@ -158,14 +225,33 @@ export const DeviceManagementPage: React.FC = () => {
       {saveSuccess && (
         <div className="bg-emerald-950/60 border border-emerald-500/60 rounded-xl p-3.5 text-xs text-emerald-300 flex items-center gap-2 animate-in fade-in">
           <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-          <span>Device network configuration successfully updated and saved to SQLite!</span>
+          <span>Device network configuration successfully updated and saved to database!</span>
         </div>
       )}
 
-      {/* Two Microcontroller Cards */}
+      {/* Diagnostic Message Banner */}
+      {pingResult && (
+        <div className={`p-4 rounded-xl border text-xs font-mono flex items-start gap-2.5 shadow-md ${
+          pingResult.isError
+            ? 'bg-rose-950/50 border-rose-700/60 text-rose-300'
+            : 'bg-emerald-950/50 border-emerald-700/60 text-emerald-300'
+        }`}>
+          {pingResult.isError ? (
+            <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+          ) : (
+            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+          )}
+          <div>
+            <span className="font-bold">[{pingResult.device} DIAGNOSTIC] </span>
+            {pingResult.message}
+          </div>
+        </div>
+      )}
+
+      {/* Two Microcontroller Nodes */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* ESP32-CAM Node Card */}
-        <div className="bg-slate-800/60 border border-slate-700/60 rounded-2xl p-6 flex flex-col justify-between shadow-xl">
+        {/* ================= ESP32-CAM NODE ================= */}
+        <div className="bg-slate-800/60 border border-slate-700/60 rounded-2xl p-6 flex flex-col justify-between shadow-xl space-y-5">
           <div>
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2.5">
@@ -173,8 +259,8 @@ export const DeviceManagementPage: React.FC = () => {
                   <Camera className="w-5 h-5" />
                 </div>
                 <div>
-                  <h3 className="font-bold text-white text-base">ESP32-CAM Node</h3>
-                  <span className="text-xs text-slate-400">AI-Thinker OV2640 Module</span>
+                  <h3 className="font-bold text-white text-base">ESP32-CAM (OV2640)</h3>
+                  <span className="text-xs text-slate-400">Wi-Fi Station Mode / DHCP Capture Server</span>
                 </div>
               </div>
               <span className={`px-3 py-1 rounded-full text-xs font-semibold font-mono ${
@@ -182,86 +268,137 @@ export const DeviceManagementPage: React.FC = () => {
                   ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
                   : deviceStatus?.cam_status === 'SIMULATED'
                   ? 'bg-emerald-950/40 text-emerald-300 border border-emerald-700/60'
-                  : 'bg-slate-700 text-slate-300'
+                  : 'bg-rose-950/40 text-rose-300 border border-rose-800/60'
               }`}>
                 {deviceStatus?.cam_status || (isSim ? 'SIMULATED' : 'OFFLINE')}
               </span>
             </div>
 
-            <p className="text-xs text-slate-400 mb-5 leading-relaxed">
-              Captures live waste snapshots over HTTP GET /capture and streams raw JPEG bytes to FastAPI for 128×128 preprocessing.
+            <p className="text-xs text-slate-400 leading-relaxed mb-4">
+              Serves live JPEG frames over HTTP <code className="text-emerald-300 bg-slate-900 px-1 py-0.5 rounded">GET /capture</code> to FastAPI. Check Serial Monitor on boot to verify the assigned DHCP IP.
             </p>
 
-            <div className="space-y-4 mb-6">
+            <div className="space-y-3">
               <div>
-                <label className="text-xs font-semibold text-slate-300 block mb-1">Device IP / Host</label>
+                <label className="text-xs font-semibold text-slate-300 block mb-1">
+                  Camera Assigned Wi-Fi IP Address
+                </label>
                 <input
                   type="text"
                   value={camIp}
                   onChange={(e) => setCamIp(e.target.value)}
-                  className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-emerald-500 font-mono"
+                  placeholder="e.g. 192.168.1.50"
+                  className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2 text-sm text-white focus:outline-none focus:border-emerald-500 font-mono"
                 />
               </div>
 
               <div>
-                <label className="text-xs font-semibold text-slate-300 block mb-1">HTTP Timeout (Seconds)</label>
+                <label className="text-xs font-semibold text-slate-300 block mb-1">
+                  HTTP Capture Timeout (Seconds)
+                </label>
                 <input
                   type="number"
+                  min="2"
+                  max="30"
                   value={camTimeout}
-                  onChange={(e) => setCamTimeout(parseInt(e.target.value) || 4)}
-                  className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-emerald-500 font-mono"
+                  onChange={(e) => setCamTimeout(parseInt(e.target.value) || 5)}
+                  className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2 text-sm text-white focus:outline-none focus:border-emerald-500 font-mono"
                 />
               </div>
 
-              <div className="bg-slate-900/60 border border-slate-800 rounded-xl p-3 text-xs space-y-1 font-mono text-slate-400">
-                <div>Endpoint: <span className="text-slate-200">http://{camIp}/capture</span></div>
-                <div>Protocol: <span className="text-slate-200">HTTP/1.1 GET (image/jpeg)</span></div>
-                <div>Flash Pin: <span className="text-slate-200">GPIO 4</span></div>
+              <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3 text-xs space-y-1.5 font-mono text-slate-400">
+                <div className="flex justify-between">
+                  <span>Root Endpoint:</span>
+                  <a href={`http://${camIp}/`} target="_blank" rel="noopener noreferrer" className="text-emerald-400 hover:underline flex items-center gap-1">
+                    http://{camIp}/ <ExternalLink className="w-3 h-3" />
+                  </a>
+                </div>
+                <div className="flex justify-between">
+                  <span>Capture Stream:</span>
+                  <a href={`http://${camIp}/capture`} target="_blank" rel="noopener noreferrer" className="text-emerald-400 hover:underline flex items-center gap-1">
+                    http://{camIp}/capture <ExternalLink className="w-3 h-3" />
+                  </a>
+                </div>
+                <div className="flex justify-between">
+                  <span>Sensor / Pin:</span>
+                  <span className="text-slate-200">OV2640 / Flash GPIO 4</span>
+                </div>
               </div>
             </div>
           </div>
 
-          <div className="space-y-2 pt-2 border-t border-slate-700/60">
+          <div className="space-y-3 pt-3 border-t border-slate-700/60">
             <div className="grid grid-cols-2 gap-2">
               <button
                 onClick={() => handleTestPing('CAM')}
                 disabled={isPinging === 'CAM'}
-                className="py-2.5 rounded-xl bg-slate-700/70 hover:bg-slate-700 text-white text-xs font-semibold flex items-center justify-center gap-2 transition-colors border border-slate-600"
+                className="py-2.5 rounded-xl bg-slate-700/80 hover:bg-slate-700 text-white text-xs font-semibold flex items-center justify-center gap-2 transition-colors border border-slate-600"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${isPinging === 'CAM' ? 'animate-spin' : ''}`} />
-                <span>Ping Probe</span>
+                <span>Test Probe (GET /)</span>
               </button>
 
               <button
-                onClick={handleTestCapture}
-                disabled={isTestingCamera}
+                onClick={handleTestCameraCapture}
+                disabled={isCapturing}
                 className="py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold flex items-center justify-center gap-2 transition-colors shadow-sm"
               >
-                <Camera className={`w-3.5 h-3.5 ${isTestingCamera ? 'animate-spin' : ''}`} />
-                <span>Test Capture</span>
+                <Camera className={`w-3.5 h-3.5 ${isCapturing ? 'animate-spin' : ''}`} />
+                <span>{isCapturing ? 'Fetching...' : 'Capture Test Frame'}</span>
               </button>
             </div>
 
-            {testSnapshot && (
-              <div className="mt-3 p-3 rounded-xl bg-slate-900/80 border border-slate-800 flex items-center gap-3">
-                <img
-                  src={testSnapshot.image_url}
-                  alt="Captured test"
-                  className="w-14 h-14 rounded-lg object-cover border border-slate-700 shrink-0"
-                />
-                <div className="text-xs">
-                  <div className="font-bold text-white">Test Frame Received</div>
-                  <div className="text-slate-400">
-                    Category: <span className="text-emerald-400 font-semibold">{testSnapshot.category}</span> ({(testSnapshot.confidence * 100).toFixed(1)}%)
-                  </div>
+            {/* Live JPEG Preview Card */}
+            {camCaptureResult && (
+              <div className="p-4 rounded-xl bg-slate-900/90 border border-emerald-500/40 space-y-3 animate-in fade-in">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-bold text-emerald-400 flex items-center gap-1.5">
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    Actual JPEG Received ({camCaptureResult.bytes_received.toLocaleString()} bytes)
+                  </span>
+                  <span className="text-slate-400 font-mono">{camCaptureResult.format}</span>
                 </div>
+
+                <div className="relative rounded-lg overflow-hidden border border-slate-700 bg-black flex justify-center items-center">
+                  <img
+                    src={camCaptureResult.image_preview_url}
+                    alt="ESP32-CAM live capture"
+                    className="max-h-56 w-auto object-contain"
+                  />
+                </div>
+
+                <div className="flex items-center justify-between pt-1">
+                  <span className="text-[11px] text-slate-400">Captured from: http://{camCaptureResult.ip}/capture</span>
+                  <button
+                    onClick={handleRunAiOnCapture}
+                    disabled={isClassifying}
+                    className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold flex items-center gap-1.5 shadow"
+                  >
+                    <Sparkles className={`w-3.5 h-3.5 ${isClassifying ? 'animate-spin' : ''}`} />
+                    <span>Run AI Classification</span>
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* AI Classification of Test Capture */}
+            {aiDetectionResult && (
+              <div className="p-3.5 rounded-xl bg-slate-900/90 border border-slate-700 text-xs space-y-1">
+                <div className="font-bold text-white flex items-center justify-between">
+                  <span>TinyML Classification:</span>
+                  <span className="text-emerald-400 font-bold">{aiDetectionResult.category}</span>
+                </div>
+                <div className="text-slate-400">
+                  Confidence: <span className="text-white font-mono">{(aiDetectionResult.confidence * 100).toFixed(1)}%</span> | Similarity: <span className="text-white font-mono">{aiDetectionResult.similarity.toFixed(3)}</span>
+                </div>
+                <div className="text-[11px] text-slate-500">{aiDetectionResult.message}</div>
               </div>
             )}
           </div>
         </div>
 
-        {/* ESP32 DevKit Node Card */}
-        <div className="bg-slate-800/60 border border-slate-700/60 rounded-2xl p-6 flex flex-col justify-between shadow-xl">
+        {/* ================= ESP32 DEVKIT NODE ================= */}
+        <div className="bg-slate-800/60 border border-slate-700/60 rounded-2xl p-6 flex flex-col justify-between shadow-xl space-y-5">
           <div>
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2.5">
@@ -270,7 +407,7 @@ export const DeviceManagementPage: React.FC = () => {
                 </div>
                 <div>
                   <h3 className="font-bold text-white text-base">ESP32 DevKit V1 Sorter</h3>
-                  <span className="text-xs text-slate-400">Dual-Servo Actuator Controller</span>
+                  <span className="text-xs text-slate-400">Continuous 360° + Positional 180° Servo Actuator</span>
                 </div>
               </div>
               <span className={`px-3 py-1 rounded-full text-xs font-semibold font-mono ${
@@ -278,65 +415,143 @@ export const DeviceManagementPage: React.FC = () => {
                   ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
                   : deviceStatus?.devkit_status === 'SIMULATED'
                   ? 'bg-emerald-950/40 text-emerald-300 border border-emerald-700/60'
-                  : 'bg-slate-700 text-slate-300'
+                  : 'bg-rose-950/40 text-rose-300 border border-rose-800/60'
               }`}>
                 {deviceStatus?.devkit_status || (isSim ? 'SIMULATED' : 'OFFLINE')}
               </span>
             </div>
 
-            <p className="text-xs text-slate-400 mb-5 leading-relaxed">
-              Drives Chute selector (GPIO 18, 0°–180°) and Trapdoor release flap (GPIO 19, 0°–90° for 1.2s) upon GET /sort?type=...
+            <p className="text-xs text-slate-400 leading-relaxed mb-4">
+              Drives 360° continuous chute servo (GPIO 18, calibrated speed & stop pulses) and 180° trapdoor servo (GPIO 19, 0° to 90° for 1.2s) upon confirmed sort requests.
             </p>
 
-            <div className="space-y-4 mb-6">
+            <div className="space-y-3">
               <div>
-                <label className="text-xs font-semibold text-slate-300 block mb-1">Device IP / Host</label>
+                <label className="text-xs font-semibold text-slate-300 block mb-1">
+                  DevKit Assigned Wi-Fi IP Address
+                </label>
                 <input
                   type="text"
                   value={devkitIp}
                   onChange={(e) => setDevkitIp(e.target.value)}
-                  className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-emerald-500 font-mono"
+                  placeholder="e.g. 192.168.1.60"
+                  className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2 text-sm text-white focus:outline-none focus:border-emerald-500 font-mono"
                 />
               </div>
 
               <div>
-                <label className="text-xs font-semibold text-slate-300 block mb-1">HTTP Timeout (Seconds)</label>
+                <label className="text-xs font-semibold text-slate-300 block mb-1">
+                  HTTP Actuation Timeout (Seconds)
+                </label>
                 <input
                   type="number"
+                  min="5"
+                  max="30"
                   value={devkitTimeout}
-                  onChange={(e) => setDevkitTimeout(parseInt(e.target.value) || 10)}
-                  className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-emerald-500 font-mono"
+                  onChange={(e) => setDevkitTimeout(parseInt(e.target.value) || 12)}
+                  className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2 text-sm text-white focus:outline-none focus:border-emerald-500 font-mono"
                 />
               </div>
 
-              <div className="bg-slate-900/60 border border-slate-800 rounded-xl p-3 text-xs space-y-1 font-mono text-slate-400">
-                <div>Endpoint: <span className="text-slate-200">http://{devkitIp}/sort?type=...</span></div>
-                <div>Chute Servo: <span className="text-slate-200">GPIO 18 (45°, 90°, 135°, 180°)</span></div>
-                <div>Trapdoor Servo: <span className="text-slate-200">GPIO 19 (0° closed, 90° open)</span></div>
+              <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3 text-xs space-y-1.5 font-mono text-slate-400">
+                <div className="flex justify-between">
+                  <span>Status Endpoint:</span>
+                  <a href={`http://${devkitIp}/status`} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline flex items-center gap-1">
+                    http://{devkitIp}/status <ExternalLink className="w-3 h-3" />
+                  </a>
+                </div>
+                <div className="flex justify-between">
+                  <span>Servo 1 (Chute):</span>
+                  <span className="text-slate-200">Continuous 360° (GPIO 18)</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Servo 2 (Flap):</span>
+                  <span className="text-slate-200">Positional 180° (GPIO 19, 0°-90°)</span>
+                </div>
               </div>
             </div>
           </div>
 
-          <div className="pt-2 border-t border-slate-700/60">
+          <div className="space-y-3 pt-3 border-t border-slate-700/60">
             <button
               onClick={() => handleTestPing('DEVKIT')}
               disabled={isPinging === 'DEVKIT'}
-              className="w-full py-2.5 rounded-xl bg-slate-700/70 hover:bg-slate-700 text-white text-xs font-semibold flex items-center justify-center gap-2 transition-colors border border-slate-600"
+              className="w-full py-2.5 rounded-xl bg-slate-700/80 hover:bg-slate-700 text-white text-xs font-semibold flex items-center justify-center gap-2 transition-colors border border-slate-600"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${isPinging === 'DEVKIT' ? 'animate-spin' : ''}`} />
-              <span>Ping DevKit Status</span>
+              <span>Ping DevKit Status (GET /status)</span>
             </button>
+
+            {/* Test Sort Actuation Section */}
+            <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3.5 space-y-3">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-bold text-white flex items-center gap-1.5">
+                  <Play className="w-3.5 h-3.5 text-blue-400" />
+                  Physical Servo Actuation Test
+                </span>
+                <span className="text-[11px] text-slate-400">Sends confirmed /sort</span>
+              </div>
+
+              <div className="grid grid-cols-4 gap-1.5">
+                {(['PLASTIC', 'METAL', 'WET', 'DRY'] as WasteCategory[]).map((cat) => (
+                  <button
+                    key={cat}
+                    onClick={() => setTestSortCategory(cat)}
+                    className={`py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                      testSortCategory === cat
+                        ? 'bg-blue-600 text-white shadow'
+                        : 'bg-slate-800 text-slate-400 hover:text-white border border-slate-700'
+                    }`}
+                  >
+                    {cat}
+                  </button>
+                ))}
+              </div>
+
+              <button
+                onClick={handleTestSortActuation}
+                disabled={isSorting}
+                className="w-full py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition-all shadow-md flex items-center justify-center gap-2"
+              >
+                {isSorting ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
+                <span>{isSorting ? `Actuating ${testSortCategory}...` : `Actuate Physical ${testSortCategory} Sort`}</span>
+              </button>
+
+              {sortResult && (
+                <div className="p-2.5 rounded-lg bg-emerald-950/60 border border-emerald-600/40 text-xs text-emerald-300 space-y-1 animate-in fade-in">
+                  <div className="font-bold flex items-center gap-1.5">
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                    Physical Actuation Confirmed!
+                  </div>
+                  <div className="text-[11px] text-slate-300 font-mono">{sortResult.message}</div>
+                </div>
+              )}
+
+              {sortError && (
+                <div className="p-2.5 rounded-lg bg-rose-950/60 border border-rose-700/50 text-xs text-rose-300 space-y-1 animate-in fade-in">
+                  <div className="font-bold flex items-center gap-1.5">
+                    <AlertTriangle className="w-3.5 h-3.5 text-rose-400" />
+                    Actuation Failed
+                  </div>
+                  <div className="text-[11px] text-slate-300 font-mono">{sortError}</div>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>
 
-      {/* Ping Results Output */}
-      {pingResult && (
-        <div className="bg-slate-800/80 border border-slate-700 rounded-2xl p-4 text-xs font-mono text-emerald-300 flex items-center gap-2 shadow-lg">
-          <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-          <span>{pingResult}</span>
+      {/* Hardware Setup Note Card */}
+      <div className="bg-slate-900/40 border border-slate-800 rounded-2xl p-4 text-xs text-slate-400 flex items-start gap-3">
+        <Info className="w-5 h-5 text-blue-400 shrink-0 mt-0.5" />
+        <div className="space-y-1">
+          <div className="text-white font-semibold">Wi-Fi Commissioning Tips</div>
+          <p>
+            Ensure both ESP32 microcontrollers and this Windows PC are connected to the same Wi-Fi router or Mobile Hotspot.
+            Check the Arduino IDE Serial Monitor at 115200 baud to view the DHCP IP address assigned to each board, then paste the addresses above and click <strong>Save IP Settings</strong>.
+          </p>
         </div>
-      )}
+      </div>
     </div>
   );
 };

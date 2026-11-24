@@ -1,6 +1,10 @@
+import base64
+import uuid
 from datetime import datetime, timezone
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+
 from app.core.config import settings
 from app.core.database import get_db
 from app.models.device import DeviceConfiguration
@@ -9,7 +13,10 @@ from app.schemas.device import (
     DevicePingRequest,
     DevicePingResponse,
     ModeSwitchRequest,
-    ModeSwitchResponse
+    ModeSwitchResponse,
+    CameraTestCaptureResponse,
+    DevKitTestSortRequest,
+    DevKitTestSortResponse,
 )
 from app.services.hardware_service import hardware_service
 
@@ -61,12 +68,14 @@ async def test_connection(payload: DevicePingRequest, db: Session = Depends(get_
     config = get_or_create_device_config(db)
     target_ip = payload.ip or (config.esp32_cam_ip if payload.device == "CAM" else config.esp32_devkit_ip)
     
-    if config.active_mode == "SIMULATION":
+    # If explicitly in simulation mode and force_real is false, simulate ping
+    if config.active_mode == "SIMULATION" and not payload.force_real:
         return DevicePingResponse(
             device=payload.device,
             ip=target_ip,
             online=True,
-            status_message=f"{payload.device} responding (Simulation Mode)"
+            status_message=f"{payload.device} responding (Simulation Mode)",
+            latency_ms=12.5
         )
         
     status = await hardware_service.ping_device(
@@ -88,7 +97,72 @@ async def test_connection(payload: DevicePingRequest, db: Session = Depends(get_
         device=payload.device,
         ip=target_ip,
         online=status.online,
-        status_message=status.status_message
+        status_message=status.status_message,
+        latency_ms=status.latency_ms,
+        details=status.details
+    )
+
+@router.post("/cam/test-capture", response_model=CameraTestCaptureResponse)
+async def test_camera_capture(ip: Optional[str] = None, db: Session = Depends(get_db)):
+    """
+    Directly tests the ESP32-CAM /capture endpoint, returns image byte statistics
+    and an inline base64 JPEG preview for verification.
+    """
+    config = get_or_create_device_config(db)
+    target_ip = ip or config.esp32_cam_ip
+
+    image_bytes = await hardware_service.capture_frame_from_cam(
+        ip=target_ip,
+        timeout=float(config.camera_timeout_seconds)
+    )
+
+    b64_str = base64.b64encode(image_bytes).decode("utf-8")
+    preview_url = f"data:image/jpeg;base64,{b64_str}"
+
+    return CameraTestCaptureResponse(
+        status="SUCCESS",
+        ip=target_ip,
+        bytes_received=len(image_bytes),
+        format="JPEG",
+        image_preview_url=preview_url,
+        message=f"Received valid JPEG frame ({len(image_bytes)} bytes) from ESP32-CAM at {target_ip}."
+    )
+
+@router.post("/devkit/test-sort", response_model=DevKitTestSortResponse)
+async def test_devkit_sort(payload: DevKitTestSortRequest, db: Session = Depends(get_db)):
+    """
+    Directly tests the physical sorting actuation on ESP32 DevKit by sending
+    an explicit sorting request to GET /sort?type=...
+    """
+    cat = payload.category.upper()
+    if cat not in ["PLASTIC", "METAL", "WET", "DRY"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid category '{payload.category}'. Allowed: PLASTIC, METAL, WET, DRY."
+        )
+
+    config = get_or_create_device_config(db)
+    target_ip = payload.ip or config.esp32_devkit_ip
+    timeout = float(config.devkit_timeout_seconds)
+    test_cmd_id = f"test-{uuid.uuid4()}"
+
+    success, msg, data = await hardware_service.dispatch_devkit_sort(
+        ip=target_ip,
+        category=cat,
+        command_id=test_cmd_id,
+        timeout=timeout
+    )
+
+    if not success:
+        status_code = 429 if data and data.get("status") == "BUSY" else 502
+        raise HTTPException(status_code=status_code, detail=msg)
+
+    return DevKitTestSortResponse(
+        status="SUCCESS",
+        ip=target_ip,
+        category=cat,
+        message=f"Physical sorting test confirmed by ESP32 DevKit at {target_ip}: {msg}",
+        details=data
     )
 
 @router.post("/camera/capture")
@@ -96,10 +170,12 @@ async def capture_from_camera(db: Session = Depends(get_db)):
     """
     Captures a frame from ESP32-CAM (or generates a simulation frame if in Simulation Mode),
     runs TinyML AI inference, saves the scan, and returns classification result.
+    In REAL_HARDWARE mode, zero silent fallback is permitted: if camera fails, an HTTPException is raised.
     """
     config = get_or_create_device_config(db)
     
     if config.active_mode == "SIMULATION":
+        # Generate clean synthetic test image (e.g. simulated sample)
         import io
         from PIL import Image, ImageDraw
         img = Image.new("RGB", (320, 240), color=(30, 41, 59))
@@ -111,24 +187,12 @@ async def capture_from_camera(db: Session = Depends(get_db)):
         image_bytes = buf.getvalue()
         source = "ESP32_CAM_SIMULATION"
     else:
-        try:
-            image_bytes = await hardware_service.capture_frame_from_cam(
-                ip=config.esp32_cam_ip,
-                timeout=2.5
-            )
-            source = "ESP32_CAM"
-        except Exception as e:
-            # Emergency demo fallback: if physical cam is disconnected or wifi drops, do not crash!
-            import io
-            from PIL import Image, ImageDraw
-            img = Image.new("RGB", (320, 240), color=(15, 23, 42))
-            draw = ImageDraw.Draw(img)
-            draw.rectangle([60, 40, 260, 200], fill=(22, 101, 52), outline=(74, 222, 128), width=3)
-            draw.text((95, 110), "LIVE OBJECT CAPTURE", fill=(255, 255, 255))
-            buf = io.BytesIO()
-            img.save(buf, format="JPEG", quality=90)
-            image_bytes = buf.getvalue()
-            source = "ESP32_CAM_FALLBACK"
+        # Real Hardware Mode: Proxy request to ESP32-CAM via HardwareService
+        image_bytes = await hardware_service.capture_frame_from_cam(
+            ip=config.esp32_cam_ip,
+            timeout=float(config.camera_timeout_seconds)
+        )
+        source = "ESP32_CAM"
 
     from app.ai.inference_service import inference_service
     prediction = inference_service.classify_image_bytes(

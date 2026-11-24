@@ -4,7 +4,7 @@ Write-Host "  Starting SmartDustbin FastAPI Backend Engine    " -ForegroundColor
 Write-Host "==================================================" -ForegroundColor Cyan
 
 $WorkspaceRoot = $PSScriptRoot
-Set-Location -Path $WorkspaceRoot
+Set-Location -Path "$WorkspaceRoot\backend"
 
 $VenvPython = "$WorkspaceRoot\backend\venv\Scripts\python.exe"
 if (-Not (Test-Path $VenvPython)) {

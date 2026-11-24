@@ -130,6 +130,7 @@ class SortingService:
                 success, msg, data = await hardware_service.dispatch_devkit_sort(
                     ip=device_ip,
                     category=cat,
+                    command_id=command.id,
                     timeout=timeout
                 )
 
