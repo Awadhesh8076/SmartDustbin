@@ -1,39 +1,30 @@
 /*
  * =========================================================================
- * Smart Dustbin - ESP32-CAM Capture Server
+ * SmartDustbin ESP32-CAM (ULTIMATE WORKING - ESP32-CAM-MB Compatible)
  * Board: AI Thinker ESP32-CAM
- * Description: Hosts a lightweight HTTP server serving real-time JPEG captures 
- *              to the Unity Mobile application.
+ * Settings: Tools -> PSRAM: Enabled | Partition: Huge APP (3MB)
+ * SSID: SmartDustbin | Password: dustbin1234
+ * Static IP: 192.168.4.1
  * =========================================================================
  */
 
 #include "esp_camera.h"
 #include <WiFi.h>
 #include <WebServer.h>
+#include "soc/soc.h"
+#include "soc/rtc_cntl_reg.h"
 
-// ==========================================
-// 1. WiFi Configuration
-// Replace with your local WiFi credentials
-// ==========================================
-const char* ssid = "YOUR_WIFI_SSID";
-const char* password = "YOUR_WIFI_PASSWORD";
-
-// Optional: Configure Static IP (Recommended for predictable Unity connection)
-IPAddress local_IP(192, 168, 4, 10);
-IPAddress gateway(192, 168, 4, 1);
-IPAddress subnet(255, 255, 255, 0);
+const char* ap_ssid = "SmartDustbin";
+const char* ap_password = "dustbin1234";
 
 WebServer server(80);
 
-// ==========================================
-// 2. AI-Thinker Camera Pin Map Definition
-// ==========================================
+// AI-Thinker Camera Pins
 #define PWDN_GPIO_NUM     32
 #define RESET_GPIO_NUM    -1
 #define XCLK_GPIO_NUM      0
 #define SIOD_GPIO_NUM     26
 #define SIOC_GPIO_NUM     27
-
 #define Y9_GPIO_NUM       35
 #define Y8_GPIO_NUM       34
 #define Y7_GPIO_NUM       39
@@ -45,42 +36,72 @@ WebServer server(80);
 #define VSYNC_GPIO_NUM    25
 #define HREF_GPIO_NUM     23
 #define PCLK_GPIO_NUM     22
-
 #define FLASH_LED_PIN      4
 
-// ==========================================
-// 3. HTTP /capture Handler
-// ==========================================
 void handleCapture() {
+  // Clear any old/stale frame from DMA memory
+  camera_fb_t * old_fb = esp_camera_fb_get();
+  if (old_fb) esp_camera_fb_return(old_fb);
+
+  // Briefly pulse flash LED to illuminate waste in hatch
+  digitalWrite(FLASH_LED_PIN, HIGH);
+  delay(40);
+
+  // Capture real frame
   camera_fb_t * fb = esp_camera_fb_get();
+  digitalWrite(FLASH_LED_PIN, LOW);
+
   if (!fb) {
-    Serial.println("[ERROR] Camera capture failed");
-    server.send(500, "text/plain", "Camera Capture Failed");
+    Serial.println("[CAM ERROR] esp_camera_fb_get returned NULL!");
+    server.send(500, "text/plain", "Camera Sensor Buffer NULL");
     return;
   }
 
-  // Allow cross-origin requests from any client
+  Serial.printf("[CAM OK] Image Captured! Size: %u bytes\n", fb->len);
+
   server.sendHeader("Access-Control-Allow-Origin", "*");
+  server.sendHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  server.sendHeader("Content-Type", "image/jpeg");
+  server.sendHeader("Content-Disposition", "inline; filename=capture.jpg");
   server.send_P(200, "image/jpeg", (const char *)fb->buf, fb->len);
   
   esp_camera_fb_return(fb);
 }
 
-void handleRoot() {
-  server.send(200, "text/html", "<h2>Smart Dustbin ESP32-CAM is Online</h2><p><a href='/capture'>Click to test /capture</a></p>");
+void handleStatus() {
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  server.send(200, "application/json", "{\"device\":\"ESP32-CAM\",\"status\":\"ONLINE\"}");
 }
 
-// ==========================================
-// 4. Setup & Initialization
-// ==========================================
+void handleRoot() {
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  server.send(200, "text/html", 
+    "<h2>Smart Dustbin ESP32-CAM Online</h2>"
+    "<p><a href='/capture'>Click to test image capture (/capture)</a></p>"
+  );
+}
+
 void setup() {
+  // Disable brownout detector for USB / MB daughterboard power spikes
+  #ifdef RTC_CNTL_BROWN_OUT_REG
+    WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
+  #elif defined(RTC_CNTL_BROWNOUT_REG)
+    WRITE_PERI_REG(RTC_CNTL_BROWNOUT_REG, 0);
+  #endif
+
   Serial.begin(115200);
-  Serial.println("\n[INIT] Starting Smart Dustbin ESP32-CAM...");
+  delay(500);
+  Serial.println("\n[INIT] Starting SmartDustbin ESP32-CAM...");
 
   pinMode(FLASH_LED_PIN, OUTPUT);
-  digitalWrite(FLASH_LED_PIN, LOW); // Flash LED off by default
+  // Blink 3 times to signal boot start
+  for (int i = 0; i < 3; i++) {
+    digitalWrite(FLASH_LED_PIN, HIGH);
+    delay(80);
+    digitalWrite(FLASH_LED_PIN, LOW);
+    delay(80);
+  }
 
-  // Camera Configuration
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
   config.ledc_timer = LEDC_TIMER_0;
@@ -100,53 +121,47 @@ void setup() {
   config.pin_sscb_scl = SIOC_GPIO_NUM;
   config.pin_pwdn = PWDN_GPIO_NUM;
   config.pin_reset = RESET_GPIO_NUM;
-  config.xclk_freq_hz = 20000000;
+  config.xclk_freq_hz = 10000000;       // 10MHz (Guarantees signal stability on MB boards)
   config.pixel_format = PIXFORMAT_JPEG;
+  config.frame_size = FRAMESIZE_QVGA;   // 320x240 (Fits in internal RAM even if PSRAM fails)
+  config.jpeg_quality = 14;
+  config.fb_count = 1;
+  config.grab_mode = CAMERA_GRAB_LATEST;
 
-  // Frame size & quality configuration
-  if(psramFound()){
-    config.frame_size = FRAMESIZE_VGA; // 640x480
-    config.jpeg_quality = 10;          // 0-63 (lower is higher quality)
-    config.fb_count = 2;
-  } else {
-    config.frame_size = FRAMESIZE_QVGA; // 320x240
-    config.jpeg_quality = 12;
-    config.fb_count = 1;
-  }
-
-  // Camera Init
   esp_err_t err = esp_camera_init(&config);
   if (err != ESP_OK) {
-    Serial.printf("[ERROR] Camera init failed with error 0x%x\n", err);
-    return;
+    Serial.printf("[ERROR] Camera init failed: 0x%x\n", err);
+  } else {
+    Serial.println("[OK] Camera Hardware Initialized Successfully!");
   }
 
-  // Adjust camera sensor orientation if needed
+  // Set camera sensor options
   sensor_t * s = esp_camera_sensor_get();
-  s->set_vflip(s, 0); // 1 to flip vertically
-  s->set_hmirror(s, 0); // 1 to mirror horizontally
-
-  // Connect to WiFi
-  // WiFi.config(local_IP, gateway, subnet); // Uncomment to enforce static IP
-  WiFi.begin(ssid, password);
-  Serial.print("[WIFI] Connecting to ");
-  Serial.print(ssid);
-
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
+  if (s) {
+    s->set_brightness(s, 1);     // Increase brightness slightly
+    s->set_saturation(s, 0);
   }
 
-  Serial.println("\n[WIFI] Connected!");
-  Serial.print("[WIFI] Camera Stream IP: http://");
-  Serial.print(WiFi.localIP());
-  Serial.println("/capture");
+  // Start Access Point & DHCP
+  WiFi.mode(WIFI_AP);
+  IPAddress apIP(192, 168, 4, 1);
+  IPAddress netMask(255, 255, 255, 0);
+  WiFi.softAPConfig(apIP, apIP, netMask);
+  WiFi.softAP(ap_ssid, ap_password);
 
-  // Route Handlers
+  Serial.println("\n==============================================");
+  Serial.printf("[AP ONLINE] SSID: %s\n", ap_ssid);
+  Serial.printf("[AP ONLINE] Pass: %s\n", ap_password);
+  Serial.print("[AP ONLINE] Stream: http://");
+  Serial.print(WiFi.softAPIP());
+  Serial.println("/capture");
+  Serial.println("==============================================\n");
+
   server.on("/", handleRoot);
+  server.on("/status", handleStatus);
   server.on("/capture", handleCapture);
   server.begin();
-  Serial.println("[SERVER] HTTP Server started");
+  Serial.println("[SERVER] Camera HTTP Server listening on port 80");
 }
 
 void loop() {

@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     DATABASE_URL: str = f"sqlite:///{STORAGE_DIR / 'smartdustbin.db'}"
     
     # Hardware Defaults
-    DEFAULT_ESP32_CAM_IP: str = "192.168.4.10"
+    DEFAULT_ESP32_CAM_IP: str = "192.168.4.1"
     DEFAULT_ESP32_DEVKIT_IP: str = "192.168.4.20"
     DEFAULT_MODE: str = "SIMULATION"  # SIMULATION or REAL_HARDWARE
     

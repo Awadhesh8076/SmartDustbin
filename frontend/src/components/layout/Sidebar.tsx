@@ -10,6 +10,7 @@ import {
   Cpu,
   Settings,
   Recycle,
+  QrCode,
   X,
 } from 'lucide-react';
 
@@ -27,6 +28,7 @@ const navItems: NavItem[] = [
   { name: 'Eco Rewards', path: '/rewards', icon: Coins },
   { name: 'Learning Analytics', path: '/analytics', icon: BarChart3 },
   { name: 'Device Management', path: '/devices', icon: Cpu },
+  { name: 'Dustbin QR & App', path: '/qr', icon: QrCode },
   { name: 'Settings', path: '/settings', icon: Settings },
 ];
 
