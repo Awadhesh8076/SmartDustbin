@@ -89,6 +89,28 @@ export const MobileThrowPage: React.FC = () => {
     }
   };
 
+  // Quick manual disposal without camera requirement
+  const handleQuickManualSort = async (cat: WasteCategory) => {
+    setConfirmedCategory(cat);
+    setErrorMessage(null);
+    setStage('SORTING');
+
+    try {
+      const sortRes = await api.executeSorting(cat);
+      if (sortRes.status === 'SUCCESS' || (sortRes.status as any) === 'SIMULATED') {
+        setCoinsEarned(sortRes.coins_earned || REWARD_MAP[cat] || 1);
+        setStage('COMPLETED');
+      } else {
+        setStage('ERROR');
+        setErrorMessage(sortRes.message || 'Sorting actuator failed to respond.');
+      }
+    } catch (err: any) {
+      setStage('ERROR');
+      const msg = err.response?.data?.detail || err.message || 'Error communicating with ESP32 DevKit sorter.';
+      setErrorMessage(msg);
+    }
+  };
+
   const handleReset = () => {
     setDetection(null);
     setCoinsEarned(0);
@@ -130,6 +152,27 @@ export const MobileThrowPage: React.FC = () => {
               <Camera className="w-5 h-5" />
               <span>Capture & Predict Waste</span>
             </button>
+
+            {/* Direct Dump Shortcut without Camera */}
+            <div className="pt-2">
+              <div className="flex items-center gap-2 my-2">
+                <div className="h-px bg-slate-800 flex-1" />
+                <span className="text-[11px] text-slate-400 uppercase tracking-wider font-semibold">Or Instant Dump by Category</span>
+                <div className="h-px bg-slate-800 flex-1" />
+              </div>
+              <div className="grid grid-cols-2 gap-2 mt-3">
+                {CATEGORIES.map((c) => (
+                  <button
+                    key={c.value}
+                    onClick={() => handleQuickManualSort(c.value)}
+                    className="py-3 px-3 rounded-xl border border-slate-700 bg-slate-900/80 hover:bg-slate-800 text-xs font-semibold text-slate-200 transition-all flex items-center justify-between active:scale-95"
+                  >
+                    <span>{c.label}</span>
+                    <span className="text-[10px] text-emerald-400">+{REWARD_MAP[c.value]}c</span>
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
         )}
 
