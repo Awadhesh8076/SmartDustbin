@@ -180,16 +180,3 @@ def set_operating_mode(payload: ModeSwitchRequest, db: Session = Depends(get_db)
         active_mode="REAL_HARDWARE",
         message="Operating mode permanently set to REAL_HARDWARE"
     )
-        config.cam_status = "SIMULATED"
-        config.devkit_status = "SIMULATED"
-    else:
-        config.cam_status = "UNCHECKED"
-        config.devkit_status = "UNCHECKED"
-        
-    db.commit()
-    
-    return ModeSwitchResponse(
-        previous_mode=prev_mode,
-        active_mode=target_mode,
-        message=f"Operating mode successfully switched to {target_mode}"
-    )

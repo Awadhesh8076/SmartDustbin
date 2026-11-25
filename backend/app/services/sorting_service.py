@@ -124,22 +124,22 @@ class SortingService:
                 status_code = 429 if data and data.get("status") == "BUSY" else 502
                 raise HTTPException(status_code=status_code, detail=msg)
 
-            except HTTPException as he:
-                if he.status_code == 504:
-                    # Critical IoT handling: Outcome is UNKNOWN if timeout occurred after dispatch
-                    command.status = "UNKNOWN"
-                    command.error_message = "Network timeout awaiting hardware response. Status is UNKNOWN. Do not retry automatically."
-                    db.commit()
-                elif he.status_code != 429 and command.status != "FAILED":
-                    command.status = "FAILED"
-                    command.error_message = str(he.detail)
-                    db.commit()
-                raise he
-            except Exception as e:
-                command.status = "FAILED"
-                command.error_message = str(e)
+        except HTTPException as he:
+            if he.status_code == 504:
+                # Critical IoT handling: Outcome is UNKNOWN if timeout occurred after dispatch
+                command.status = "UNKNOWN"
+                command.error_message = "Network timeout awaiting hardware response. Status is UNKNOWN. Do not retry automatically."
                 db.commit()
-                raise HTTPException(status_code=502, detail=f"Hardware communication error: {str(e)}")
+            elif he.status_code != 429 and command.status != "FAILED":
+                command.status = "FAILED"
+                command.error_message = str(he.detail)
+                db.commit()
+            raise he
+        except Exception as e:
+            command.status = "FAILED"
+            command.error_message = str(e)
+            db.commit()
+            raise HTTPException(status_code=502, detail=f"Hardware communication error: {str(e)}")
 
     @staticmethod
     def get_sorting_history(db: Session, limit: int = 20, offset: int = 0) -> Tuple[int, list]:

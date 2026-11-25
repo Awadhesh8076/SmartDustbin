@@ -19,8 +19,8 @@ import { CameraTestCaptureResponse, DevKitTestSortResponse, DetectionResult, Was
 
 export const DeviceManagementPage: React.FC = () => {
   const { deviceStatus, refreshStatus } = useHardware();
-  const [camIp, setCamIp] = useState(deviceStatus?.esp32_cam_ip || '192.168.4.10');
-  const [devkitIp, setDevkitIp] = useState(deviceStatus?.esp32_devkit_ip || '192.168.4.20');
+  const [camIp, setCamIp] = useState(deviceStatus?.esp32_cam_ip || '192.168.4.1');
+  const [devkitIp, setDevkitIp] = useState(deviceStatus?.esp32_devkit_ip || '192.168.4.1');
   const [camTimeout, setCamTimeout] = useState(5);
   const [devkitTimeout, setDevkitTimeout] = useState(12);
 

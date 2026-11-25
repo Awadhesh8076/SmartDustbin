@@ -14,7 +14,7 @@ interface HardwareContextType {
 const HardwareContext = createContext<HardwareContextType | undefined>(undefined);
 
 export const HardwareProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [activeMode, setActiveMode] = useState<OperatingMode>('SIMULATION');
+  const [activeMode, setActiveMode] = useState<OperatingMode>('REAL_HARDWARE');
   const [deviceStatus, setDeviceStatus] = useState<DeviceStatusResponse | null>(null);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);

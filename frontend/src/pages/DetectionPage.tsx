@@ -39,7 +39,7 @@ const COMPARTMENT_DETAILS: Record<Exclude<WasteCategory, 'UNKNOWN'>, { name: str
 export const DetectionPage: React.FC = () => {
   const { activeMode, deviceStatus, refreshStatus } = useHardware();
   const { refreshBalance } = useRewards();
-  const [sourceMode, setSourceMode] = useState<'ESP32' | 'WEBCAM' | 'UPLOAD'>('ESP32');
+  const [sourceMode, setSourceMode] = useState<'ESP32' | 'WEBCAM' | 'UPLOAD'>('WEBCAM');
 
   // Webcam state
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -394,17 +394,29 @@ export const DetectionPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Camera Capture Error Banner (Zero Silent Fallback) */}
+      {/* Camera Capture Error Banner */}
       {captureError && (
-        <div className="p-4 rounded-xl bg-rose-950/60 border border-rose-700/60 text-xs text-rose-300 flex items-start gap-3 shadow-lg">
-          <AlertTriangle className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
-          <div>
-            <div className="font-bold text-white">Hardware Capture Error (Zero Silent Fallback)</div>
-            <div className="mt-0.5 font-mono">{captureError}</div>
-            <div className="text-slate-400 mt-1">
-              Verify ESP32-CAM power supply (5V 2A), check Wi-Fi connection in Serial Monitor, and ensure the correct IP is saved in Device Management.
+        <div className="p-4 rounded-xl bg-rose-950/60 border border-rose-700/60 text-xs text-rose-300 flex items-start justify-between gap-3 shadow-lg">
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
+            <div>
+              <div className="font-bold text-white">ESP32-CAM Not Reachable via Wi-Fi</div>
+              <div className="mt-0.5 font-mono text-rose-200">{captureError}</div>
+              <div className="text-slate-400 mt-1">
+                You can switch to <b>Live Browser Viewfinder (Laptop Webcam)</b> tab above to test AI detection and sort without ESP32-CAM!
+              </div>
             </div>
           </div>
+          <button
+            onClick={() => {
+              setCaptureError(null);
+              setSourceMode('WEBCAM');
+              startCamera();
+            }}
+            className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shrink-0 transition-all shadow"
+          >
+            Use Laptop Webcam
+          </button>
         </div>
       )}
 
